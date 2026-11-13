@@ -3,14 +3,14 @@ ManifestDPIAware true
 !include "MUI2.nsh"
 
 !define APPNAME "Kotha"
-!define VERSION "2.2.1"
+!define VERSION "2.2.2"
 !ifdef FULL
   !define SRC "dist_full\Kotha"
-  !define OUT "output\Kotha-Setup-Offline.exe"
+  !define OUT "output\Kotha-Windows-Offline-Setup.exe"
   !define EDITION "Kotha Offline"
 !else
   !define SRC "dist_lite\Kotha"
-  !define OUT "output\Kotha-Setup.exe"
+  !define OUT "output\Kotha-Windows-Setup.exe"
   !define EDITION "Kotha"
 !endif
 !define UNKEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\Kotha"
@@ -22,7 +22,7 @@ InstallDir "$LOCALAPPDATA\Programs\Kotha"
 RequestExecutionLevel user
 SetCompressor /SOLID lzma
 BrandingText "${EDITION} ${VERSION}"
-VIProductVersion "2.2.1.0"
+VIProductVersion "2.2.2.0"
 VIAddVersionKey "ProductName" "Kotha"
 VIAddVersionKey "FileDescription" "Kotha voice typing installer"
 VIAddVersionKey "FileVersion" "${VERSION}"

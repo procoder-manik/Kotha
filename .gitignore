@@ -4,7 +4,7 @@ dist/
 dist_lite/
 dist_full/
 output/
-*.spec
+Kotha.spec
 
 # Installers: upload these to GitHub Releases, not to the repository
 *.exe
@@ -28,3 +28,9 @@ history.json
 .idea/
 Thumbs.db
 .DS_Store
+
+# macOS build output
+*.dmg
+*.app
+.venv-mac/
+dmg_staging/

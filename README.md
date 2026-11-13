@@ -4,12 +4,13 @@
 
 # Kotha (কথা)
 
-**Free, open-source voice typing for Windows. Speak Bangla, English, or a natural mix of both, and the text appears wherever your cursor is.**
+**Free, open-source voice typing for Windows and macOS. Speak Bangla, English, or a natural mix of both, and the text appears wherever your cursor is.**
 
 কথা বলুন, লেখা হয়ে যাবে।
 
-[![Download](https://img.shields.io/badge/Download-Kotha--Setup.exe-006A4E?style=for-the-badge&logo=windows)](../../releases/latest/download/Kotha-Setup.exe)
-[![Offline](https://img.shields.io/badge/Offline%20edition-73%20MB-444?style=for-the-badge)](../../releases/latest/download/Kotha-Setup-Offline.exe)
+[![Download](https://img.shields.io/badge/Download-Windows-006A4E?style=for-the-badge&logo=windows)](../../releases/latest/download/Kotha-Windows-Setup.exe)
+[![Mac](https://img.shields.io/badge/Download-macOS%20(Apple%20Silicon)-000000?style=for-the-badge&logo=apple)](../../releases/latest/download/Kotha-Mac-AppleSilicon.dmg)
+[![Offline](https://img.shields.io/badge/Windows%20Offline-75%20MB-444?style=for-the-badge)](../../releases/latest/download/Kotha-Windows-Offline-Setup.exe)
 [![License](https://img.shields.io/badge/License-MIT-F42A41?style=for-the-badge)](LICENSE)
 
 <img src="docs/kotha-free-bangla-voice-typing-banner.png" alt="Kotha: free open-source Bangla and English voice typing app for Windows, by Manik Hossain" width="760">
@@ -19,7 +20,7 @@
 ## Why Kotha
 
 - **Bangla first.** Built for people who think in Bangla and write in a mix of Bangla and English. 85+ languages are supported.
-- **Works everywhere.** Notepad, Word, WhatsApp Web, Gmail, VS Code, any text box. Kotha types the text for you.
+- **Works everywhere.** Notepad, Word, WhatsApp Web, Gmail, VS Code, any text box. Kotha types the text for you. Windows and macOS.
 - **Fast.** Long speech is sent in pieces while you are still talking, the connection is opened the moment you press the shortcut, and silence is trimmed before upload.
 - **Free.** Uses a free Gemini API key. No card, no subscription.
 - **Open source.** MIT licensed. Read the code, change it, build it yourself.
@@ -29,12 +30,14 @@
 
 Get the latest installers from the **[Releases page](../../releases/latest)**.
 
-| File | Size | Use it when |
+| File | System | Use it when |
 |---|---|---|
-| [`Kotha-Setup.exe`](../../releases/latest/download/Kotha-Setup.exe) | ~15 MB | Recommended. Uses Gemini with a free API key. |
-| [`Kotha-Setup-Offline.exe`](../../releases/latest/download/Kotha-Setup-Offline.exe) | ~74 MB | You also want the offline Whisper engine (no internet needed, slower, weaker for Bangla). |
+| [`Kotha-Windows-Setup.exe`](../../releases/latest/download/Kotha-Windows-Setup.exe) | Windows 10/11 | Recommended. Uses Gemini with a free API key. |
+| [`Kotha-Windows-Offline-Setup.exe`](../../releases/latest/download/Kotha-Windows-Offline-Setup.exe) | Windows 10/11 | You also want the offline Whisper engine (no internet needed, slower, weaker for Bangla). |
+| [`Kotha-Mac-AppleSilicon.dmg`](../../releases/latest/download/Kotha-Mac-AppleSilicon.dmg) | macOS 11+, Apple Silicon (M1/M2/M3/M4) | MacBooks and Macs from late 2020 onward. |
+| [`Kotha-Mac-Intel.dmg`](../../releases/latest/download/Kotha-Mac-Intel.dmg) | macOS 11+, Intel | Older Intel Macs. |
 
-Windows 10 or 11. No admin rights needed.
+Windows: no admin rights needed. Not sure which Mac you have? Apple menu > About This Mac: "Chip: Apple M..." means Apple Silicon.
 
 > Windows SmartScreen may warn about an unknown publisher because the installer is not code-signed. Click **More info** and then **Run anyway**.
 
@@ -65,11 +68,48 @@ Go to **https://aistudio.google.com/apikey** and sign in with your Google accoun
 
 **Step 4. Start talking**
 1. Click into any text box.
-2. Hold **Ctrl + Win**, speak, and release. The text is typed for you.
+2. Hold **Ctrl + Win** (Mac: **Right Option**), speak, and release. The text is typed for you.
 3. Double-tap the shortcut for hands-free mode, press it again to finish.
 4. **Esc** cancels.
 
 You can change the shortcut in the **শর্টকাট** tab (presets, or record your own).
+
+## macOS guide (2.2.2)
+
+Kotha for Mac lives in the **menu bar** (top right of the screen), not in the Dock.
+
+**1. Install**
+1. Open the `.dmg` and drag **Kotha** into **Applications**.
+2. The app is not notarized by Apple (it is a free open-source build). The first time, **right-click Kotha > Open > Open**.
+   If macOS still blocks it, run this once in Terminal, then open it again:
+   ```bash
+   xattr -cr /Applications/Kotha.app
+   ```
+
+**2. Allow three permissions** (macOS asks on first use, or use the buttons in Kotha Settings > **সাধারণ**)
+
+| Permission | Why Kotha needs it |
+|---|---|
+| **Input Monitoring** | to notice when you hold the shortcut |
+| **Accessibility** | to paste the text into the app you are typing in |
+| **Microphone** | to hear you |
+
+Open **System Settings > Privacy & Security**, and switch **Kotha** on in each of the three lists. If the shortcut does nothing after you allow them, quit Kotha from the menu bar icon and open it again.
+
+**3. Add the free Gemini key**: follow the same steps as [the setup guide above](#setup-guide-get-a-free-gemini-api-key-2-minutes). Open Settings from the menu bar icon.
+
+**4. Talk.** Click in any text box, **hold Right Option (⌥)**, speak, release. Double-tap for hands-free mode. **Esc** cancels.
+Change the shortcut in Settings > **শর্টকাট**. Presets: Right Option, Control + Option, Control + Command, Right Control, Option + Command, F9.
+
+| Mac problem | Fix |
+|---|---|
+| Nothing happens when I hold the key | Input Monitoring or Accessibility is off. Turn **Kotha** on in both, then quit and reopen Kotha. |
+| Text is not pasted, only a popup shows | Accessibility is off, or no text box is focused. The text is already on your clipboard, press **Cmd+V**. |
+| "No microphone" or nothing heard | Turn **Kotha** on under Microphone. Pick the right input in Settings > **সাধারণ**. |
+| "Kotha is damaged" or "cannot be opened" | Run `xattr -cr /Applications/Kotha.app` in Terminal. |
+| Bangla letters look wrong in Settings | Make sure the Bangla font (Kohinoor Bangla) is installed. It ships with macOS. |
+
+Not available on Mac yet: the offline Whisper edition.
 
 ### Optional: a free Groq key as backup
 Gemini's free tier has a daily limit. Add a free key from **https://console.groq.com/keys** in the **Groq key (ব্যাকআপ)** field. When the Gemini limit runs out, Kotha switches to Groq automatically.
@@ -87,11 +127,11 @@ Gemini's free tier has a daily limit. Add a free key from **https://console.groq
 
 ## বাংলায় সংক্ষেপে
 
-1. [Releases](../../releases/latest) থেকে `Kotha-Setup.exe` নামিয়ে ইনস্টল করুন।
+1. [Releases](../../releases/latest) থেকে `Kotha-Windows-Setup.exe` নামিয়ে ইনস্টল করুন।
 2. https://aistudio.google.com/apikey এ Google অ্যাকাউন্ট দিয়ে ঢুকুন।
 3. **Create API key** চাপুন, তারপর **Create API key in new project** বেছে নিন। কোনো billing বা কার্ড যোগ করবেন না, তাহলেই ফ্রি থাকবে।
 4. key কপি করে Kotha এর Settings এ **Gemini API key** ঘরে বসান, **Key চেক করো** চাপুন, তারপর **Save**।
-5. যেকোনো টেক্সট বক্সে ক্লিক করুন, **Ctrl + Win** চেপে ধরে কথা বলুন, ছেড়ে দিলেই লেখা বসে যাবে।
+5. যেকোনো টেক্সট বক্সে ক্লিক করুন, **Ctrl + Win** (Mac এ **Right Option**) চেপে ধরে কথা বলুন, ছেড়ে দিলেই লেখা বসে যাবে।
 
 ## Engines
 
@@ -108,23 +148,33 @@ Free-tier audio may be used by Google to improve its products. Use the Offline e
 
 ## Build from source
 
-Needs Windows, Python 3.12, and [NSIS](https://nsis.sourceforge.io).
+**Windows** needs Python 3.12 and [NSIS](https://nsis.sourceforge.io).
 
 ```bat
-build.bat            :: lite installer  -> output\Kotha-Setup.exe
-build.bat offline    :: offline installer -> output\Kotha-Setup-Offline.exe
+build.bat            :: lite installer  -> output\Kotha-Windows-Setup.exe
+build.bat offline    :: offline installer -> output\Kotha-Windows-Offline-Setup.exe
 ```
 
-Run from source:
+**macOS** needs a Mac with Python 3.12 (python.org build, it includes Tk):
 
-```bat
+```bash
+chmod +x build_mac.sh
+./build_mac.sh        # output/Kotha-Mac-AppleSilicon.dmg (Kotha-Mac-Intel.dmg on Intel Macs)
+```
+
+No Mac? The GitHub Actions workflow `.github/workflows/build-mac.yml` builds the `.dmg` for you (Actions tab > Build Kotha for macOS > Run workflow).
+
+Run from source on either system:
+
+```bash
 pip install -r requirements.txt
 python kotha.py
 ```
 
-A GitHub Actions workflow in `.github/workflows/build.yml` builds both installers. Push a tag like `v2.2.1` or run it manually.
+The OS-specific code is isolated in `plat_win.py` and `plat_mac.py`; `kotha.py` is shared.
+GitHub Actions workflows: `build.yml` (Windows installers) and `build-mac.yml` (Mac `.dmg`). Push a tag like `v2.2.2` or run them manually.
 
-Settings, history and logs live in `%APPDATA%\Kotha`.
+Settings, history and logs live in `%APPDATA%\Kotha` on Windows and `~/Library/Application Support/Kotha` on Mac.
 
 ## Contributing
 

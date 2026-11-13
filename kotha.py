@@ -1,8 +1,8 @@
 """
-Kotha (কথা) - fast voice typing for Windows.
+Kotha (কথা) - fast voice typing for Windows and macOS.
 Bangla, English, mixed Banglish, Hindi and 80+ more languages.
 
-  Hold the shortcut (default Ctrl + Win)  -> talk, release -> text is typed at your cursor
+  Hold the shortcut (Windows: Ctrl + Win, Mac: Right Option) -> talk, release -> text is typed at your cursor
   Double-tap the shortcut                 -> hands-free, press once more to finish
   Esc while recording                     -> cancel
 
@@ -24,10 +24,7 @@ import queue
 import threading
 import webbrowser
 import importlib.util
-import winreg
-import winsound
 from concurrent.futures import ThreadPoolExecutor, Future
-from ctypes import wintypes
 from datetime import datetime
 
 import sounddevice as sd
@@ -54,22 +51,24 @@ from tkinter import ttk, messagebox
 import pystray
 from PIL import Image
 
-try:
-    import uiautomation as uia
-except Exception:
-    uia = None
+if sys.platform == "win32":
+    import plat_win as plat
+elif sys.platform == "darwin":
+    import plat_mac as plat
+else:
+    raise SystemExit("Kotha supports Windows and macOS only.")
 
 APP = "Kotha"
 APP_BN = "কথা"
-VERSION = "2.2.1"
+VERSION = "2.2.2"
 CFG_VERSION = 3
-DATA_DIR = os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")), APP)
+DATA_DIR = os.path.join(plat.USER_DATA_BASE, APP)
 MODELS_DIR = os.path.join(DATA_DIR, "models")
 os.makedirs(MODELS_DIR, exist_ok=True)
 CFG_PATH = os.path.join(DATA_DIR, "config.json")
 HIST_PATH = os.path.join(DATA_DIR, "history.json")
 LOG_PATH = os.path.join(DATA_DIR, "kotha.log")
-FONT = "Nirmala UI"   # ships with Windows 10/11, renders Bangla and Devanagari well
+FONT = plat.FONT   # Windows: Nirmala UI (renders Bangla and Devanagari well); Mac: system font with Bangla fallback
 DEV_NAME = "Manik Hossain"
 DEV_URL = "https://www.manikhossain.in/"
 DEV_SITE = "manikhossain.in"
@@ -79,6 +78,7 @@ WHATSAPP_TEXT = "+880 1720-520782"
 WHATSAPP_URL = "https://wa.me/8801720520782"
 
 LOCAL_AVAILABLE = importlib.util.find_spec("faster_whisper") is not None
+PASTE_KEYS = "Cmd+V" if plat.IS_MAC else "Ctrl+V"
 GEMINI_KEY_URL = "https://aistudio.google.com/apikey"
 GEMINI_BASE = "https://generativelanguage.googleapis.com"
 
@@ -128,36 +128,9 @@ def lang_info(cfg):
 # --------------------------------------------------------------------------
 # Hotkeys
 # --------------------------------------------------------------------------
-TOKEN_VKS = {
-    "ctrl": {0x11, 0xA2, 0xA3}, "lctrl": {0xA2}, "rctrl": {0xA3},
-    "alt": {0x12, 0xA4, 0xA5}, "lalt": {0xA4}, "ralt": {0xA5},
-    "shift": {0x10, 0xA0, 0xA1}, "lshift": {0xA0}, "rshift": {0xA1},
-    "win": {0x5B, 0x5C}, "space": {0x20}, "capslock": {0x14}, "tab": {0x09},
-    "insert": {0x2D}, "pause": {0x13}, "scrolllock": {0x91}, "apps": {0x5D}, "backtick": {0xC0},
-}
-for _i in range(24):
-    TOKEN_VKS[f"f{_i + 1}"] = {0x70 + _i}
-for _c in "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789":
-    TOKEN_VKS[_c.lower()] = {ord(_c)}
-
-MOD_TOKENS = {"ctrl", "lctrl", "rctrl", "alt", "lalt", "ralt", "shift", "lshift", "rshift", "win"}
-SOLO_OK = {"ralt", "rctrl", "lalt", "rshift", "capslock", "insert", "pause", "scrolllock", "apps"} | \
-          {f"f{i}" for i in range(1, 25)}
-TOKEN_LABEL = {"ctrl": "Ctrl", "lctrl": "Left Ctrl", "rctrl": "Right Ctrl", "alt": "Alt",
-               "lalt": "Left Alt", "ralt": "Right Alt", "shift": "Shift", "lshift": "Left Shift",
-               "rshift": "Right Shift", "win": "Win", "space": "Space", "capslock": "Caps Lock",
-               "tab": "Tab", "insert": "Insert", "pause": "Pause", "scrolllock": "Scroll Lock",
-               "apps": "Menu", "backtick": "`"}
-ORDER = ["ctrl", "lctrl", "rctrl", "alt", "lalt", "ralt", "shift", "lshift", "rshift", "win"]
-HOTKEY_PRESETS = [
-    ["ctrl", "win"], ["ctrl", "alt"], ["ralt"], ["rctrl"], ["alt", "win"],
-    ["ctrl", "shift", "space"], ["f9"], ["capslock"],
-]
-
-_VK_SIDE = {0xA2: "lctrl", 0xA3: "rctrl", 0xA4: "lalt", 0xA5: "ralt", 0xA0: "lshift", 0xA1: "rshift",
-            0x11: "ctrl", 0x12: "alt", 0x10: "shift", 0x5B: "win", 0x5C: "win"}
-_VK_GENERIC = {0xA2: "ctrl", 0xA3: "ctrl", 0xA4: "alt", 0xA5: "alt", 0xA0: "shift", 0xA1: "shift",
-               0x11: "ctrl", 0x12: "alt", 0x10: "shift", 0x5B: "win", 0x5C: "win"}
+TOKEN_VKS, MOD_TOKENS, SOLO_OK, TOKEN_LABEL, ORDER = plat.TOKEN_VKS, plat.MOD_TOKENS, plat.SOLO_OK, plat.TOKEN_LABEL, plat.ORDER
+HOTKEY_PRESETS, DEFAULT_HOTKEY = plat.HOTKEY_PRESETS, plat.DEFAULT_HOTKEY
+_VK_SIDE, _VK_GENERIC = plat.VK_SIDE, plat.VK_GENERIC
 
 
 def hotkey_label(tokens):
@@ -217,12 +190,12 @@ DEFAULTS = {
     "script_style": "mixed",            # mixed | native
     "clean_fillers": True,              # SMART mode
     "custom_words": "",
-    "hotkey": ["ctrl", "win"],
+    "hotkey": list(DEFAULT_HOTKEY),
     "mic": "",
     "smart_paste": True,
     "restore_clipboard": True,
     "sounds": True,
-    "start_with_windows": True,
+    "start_with_windows": plat.DEFAULT_START_AT_LOGIN,     # key name kept for old config files
     "pipeline": True,
     "hold_threshold_ms": 300,
     "double_tap_ms": 400,
@@ -256,7 +229,7 @@ class Config(dict):
         if self["provider"] == "local" and not LOCAL_AVAILABLE:
             self["provider"] = "gemini_live"
         if not hotkey_valid(self["hotkey"]):
-            self["hotkey"] = ["ctrl", "win"]
+            self["hotkey"] = list(DEFAULT_HOTKEY)
 
     def save(self):
         with open(CFG_PATH, "w", encoding="utf-8") as f:
@@ -290,124 +263,12 @@ class History:
 
 
 # --------------------------------------------------------------------------
-# Win32
+# OS layer (see plat_win.py / plat_mac.py)
 # --------------------------------------------------------------------------
-user32 = ctypes.WinDLL("user32", use_last_error=True)
-kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-
-WH_KEYBOARD_LL = 13
-WM_KEYDOWN, WM_SYSKEYDOWN = 0x100, 0x104
-LLKHF_INJECTED = 0x10
-VK_ESCAPE, VK_CONTROL, VK_V, VK_MASK = 0x1B, 0x11, 0x56, 0xE8
-KEYEVENTF_KEYUP = 0x2
-
-
-class KBDLLHOOKSTRUCT(ctypes.Structure):
-    _fields_ = [("vkCode", wintypes.DWORD), ("scanCode", wintypes.DWORD),
-                ("flags", wintypes.DWORD), ("time", wintypes.DWORD),
-                ("dwExtraInfo", ctypes.c_size_t)]
-
-
-class GUITHREADINFO(ctypes.Structure):
-    _fields_ = [("cbSize", wintypes.DWORD), ("flags", wintypes.DWORD),
-                ("hwndActive", wintypes.HWND), ("hwndFocus", wintypes.HWND),
-                ("hwndCapture", wintypes.HWND), ("hwndMenuOwner", wintypes.HWND),
-                ("hwndMoveSize", wintypes.HWND), ("hwndCaret", wintypes.HWND),
-                ("rcCaret", wintypes.RECT)]
-
-
-HOOKPROC = ctypes.WINFUNCTYPE(ctypes.c_ssize_t, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM)
-user32.SetWindowsHookExW.argtypes = (ctypes.c_int, HOOKPROC, wintypes.HINSTANCE, wintypes.DWORD)
-user32.SetWindowsHookExW.restype = wintypes.HHOOK
-user32.CallNextHookEx.argtypes = (wintypes.HHOOK, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM)
-user32.CallNextHookEx.restype = ctypes.c_ssize_t
-user32.GetMessageW.argtypes = (ctypes.POINTER(wintypes.MSG), wintypes.HWND, wintypes.UINT, wintypes.UINT)
-user32.keybd_event.argtypes = (wintypes.BYTE, wintypes.BYTE, wintypes.DWORD, ctypes.c_size_t)
-user32.GetAsyncKeyState.argtypes = (ctypes.c_int,)
-user32.GetAsyncKeyState.restype = ctypes.c_short
-user32.GetGUIThreadInfo.argtypes = (wintypes.DWORD, ctypes.POINTER(GUITHREADINFO))
-user32.GetWindowLongW.argtypes = (wintypes.HWND, ctypes.c_int)
-user32.SetWindowLongW.argtypes = (wintypes.HWND, ctypes.c_int, ctypes.c_long)
-user32.GetParent.argtypes = (wintypes.HWND,)
-user32.GetParent.restype = wintypes.HWND
-kernel32.GetModuleHandleW.argtypes = (wintypes.LPCWSTR,)
-kernel32.GetModuleHandleW.restype = wintypes.HMODULE
-kernel32.CreateMutexW.argtypes = (ctypes.c_void_p, wintypes.BOOL, wintypes.LPCWSTR)
-kernel32.CreateMutexW.restype = wintypes.HANDLE
-
-
-def key_is_down(vk):
-    return bool(user32.GetAsyncKeyState(vk) & 0x8000)
-
-
-def send_mask_key():
-    # An unassigned key between Win/Alt down and up stops the Start menu / menu bar from opening.
-    user32.keybd_event(VK_MASK, 0, 0, 0)
-    user32.keybd_event(VK_MASK, 0, KEYEVENTF_KEYUP, 0)
-
-
-def wait_keys_released(vks, timeout=3.0):
-    end = time.time() + timeout
-    while time.time() < end and any(key_is_down(v) for v in vks):
-        time.sleep(0.01)
-
-
-def press_ctrl_v():
-    user32.keybd_event(VK_CONTROL, 0, 0, 0)
-    user32.keybd_event(VK_V, 0, 0, 0)
-    user32.keybd_event(VK_V, 0, KEYEVENTF_KEYUP, 0)
-    user32.keybd_event(VK_CONTROL, 0, KEYEVENTF_KEYUP, 0)
-
-
-def make_no_activate(widget):
-    GWL_EXSTYLE = -20
-    style_add = 0x08000000 | 0x80 | 0x8 | 0x20 | 0x80000  # NOACTIVATE|TOOLWINDOW|TOPMOST|TRANSPARENT|LAYERED
-    widget.update_idletasks()
-    hwnd = user32.GetParent(widget.winfo_id()) or widget.winfo_id()
-    user32.SetWindowLongW(hwnd, GWL_EXSTYLE, user32.GetWindowLongW(hwnd, GWL_EXSTYLE) | style_add)
-
-
-def work_area():
-    rect = wintypes.RECT()
-    ctypes.windll.user32.SystemParametersInfoW(0x30, 0, ctypes.byref(rect), 0)
-    return rect.left, rect.top, rect.right, rect.bottom
-
-
-# --------------------------------------------------------------------------
-# Is there a text box to type into?
-# --------------------------------------------------------------------------
-def _uia_editable():
-    el = uia.GetFocusedControl()
-    if not el:
-        return False
-    CT = uia.ControlType
-    vp = None
-    try:
-        vp = el.GetValuePattern()
-    except Exception:
-        pass
-    if el.ControlType in (CT.EditControl, CT.DocumentControl, CT.ComboBoxControl):
-        return not vp.IsReadOnly if vp is not None else True
-    return vp is not None and not vp.IsReadOnly
-
-
-def focused_is_editable():
-    """True = text box, False = definitely not, None = unknown (paste anyway)."""
-    try:
-        info = GUITHREADINFO()
-        info.cbSize = ctypes.sizeof(GUITHREADINFO)
-        if user32.GetGUIThreadInfo(0, ctypes.byref(info)) and info.hwndCaret:
-            return True
-    except Exception:
-        pass
-    if uia is None:
-        return None
-    try:
-        with uia.UIAutomationInitializerInThread():
-            return _uia_editable()
-    except Exception as e:
-        log(f"UIA probe failed: {e}")
-        return None
+plat.set_logger(log)
+key_is_down, send_mask_key, wait_keys_released = plat.key_is_down, plat.send_mask_key, plat.wait_keys_released
+press_paste, make_no_activate, work_area = plat.press_paste, plat.make_no_activate, plat.work_area
+focused_is_editable, HotkeyHook = plat.focused_is_editable, plat.HotkeyHook
 
 
 # --------------------------------------------------------------------------
@@ -516,7 +377,7 @@ def net_error_text(e):
     if "ssl" in low or "certificate" in low:
         return "SSL সমস্যা: antivirus বা VPN এর HTTPS scanning বন্ধ করে দেখো"
     if "proxy" in low:
-        return "Proxy সমস্যা: Windows proxy settings চেক করো"
+        return f"Proxy সমস্যা: {plat.PROXY_HINT}"
     if "getaddrinfo" in low or "nameresolution" in low or "name resolution" in low:
         return "DNS সমস্যা: ইন্টারনেট চালু আছে কিনা দেখো, বা DNS 8.8.8.8 দিয়ে দেখো"
     if "timed out" in low or "timeout" in low:
@@ -1036,97 +897,6 @@ class LiveSession:
             pass
 
 # --------------------------------------------------------------------------
-# Global keyboard hook with configurable shortcut
-# --------------------------------------------------------------------------
-class HotkeyHook(threading.Thread):
-    def __init__(self, out_q, ui_q, tokens):
-        super().__init__(daemon=True)
-        self.q, self.ui_q = out_q, ui_q
-        self.down = set()
-        self.combo = False
-        self.swallowed = set()
-        self.capturing = False
-        self.cap_down, self.cap_all = set(), set()
-        self.set_hotkey(tokens)
-        self._proc = HOOKPROC(self._callback)
-
-    def set_hotkey(self, tokens):
-        groups = [TOKEN_VKS[t] for t in tokens if t in TOKEN_VKS]
-        all_vks = set().union(*groups) if groups else set()
-        swallow = set()
-        for t in tokens:
-            if t not in MOD_TOKENS:
-                swallow |= TOKEN_VKS.get(t, set())
-        self.groups, self.combo_vks, self.swallow_vks = groups, all_vks, swallow
-        self.needs_mask = any(t in ("alt", "lalt", "ralt", "win") for t in tokens)
-        self.combo = False
-
-    def start_capture(self):
-        self.cap_down, self.cap_all = set(), set()
-        self.capturing = True
-
-    def stop_capture(self):
-        self.capturing = False
-
-    def _active(self):
-        return bool(self.groups) and all(self.down & g for g in self.groups)
-
-    def _callback(self, n_code, w_param, l_param):
-        if n_code == 0:
-            kb = ctypes.cast(l_param, ctypes.POINTER(KBDLLHOOKSTRUCT)).contents
-            if not (kb.flags & LLKHF_INJECTED):
-                vk = kb.vkCode
-                down = w_param in (WM_KEYDOWN, WM_SYSKEYDOWN)
-                if self.capturing:
-                    if down:
-                        self.cap_down.add(vk)
-                        self.cap_all.add(vk)
-                    else:
-                        self.cap_down.discard(vk)
-                        if not self.cap_down and self.cap_all:
-                            self.capturing = False
-                            self.ui_q.put(("captured", set(self.cap_all)))
-                    return 1
-                # forget keys whose key-up we missed (lock screen, UAC, ...)
-                for k in list(self.down):
-                    if k != vk and not key_is_down(k):
-                        self.down.discard(k)
-                if down:
-                    if self.combo and vk not in self.combo_vks:
-                        self.q.put(("other",))
-                    if vk == VK_ESCAPE:
-                        self.q.put(("esc",))
-                    self.down.add(vk)
-                else:
-                    self.down.discard(vk)
-                now = self._active()
-                if now and not self.combo:
-                    self.combo = True
-                    self.q.put(("down", time.monotonic(), self.needs_mask))
-                elif not now and self.combo:
-                    self.combo = False
-                    self.q.put(("up", time.monotonic()))
-                if vk in self.swallow_vks:
-                    if down and self.combo:
-                        self.swallowed.add(vk)
-                        return 1
-                    if not down and vk in self.swallowed:
-                        self.swallowed.discard(vk)
-                        return 1
-        return user32.CallNextHookEx(None, n_code, w_param, l_param)
-
-    def run(self):
-        self.hook = user32.SetWindowsHookExW(WH_KEYBOARD_LL, self._proc, kernel32.GetModuleHandleW(None), 0)
-        if not self.hook:
-            log(f"SetWindowsHookEx failed: {ctypes.get_last_error()}")
-            return
-        msg = wintypes.MSG()
-        while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) != 0:
-            user32.TranslateMessage(ctypes.byref(msg))
-            user32.DispatchMessageW(ctypes.byref(msg))
-
-
-# --------------------------------------------------------------------------
 # Controller: recording state machine + pipelined transcription
 # --------------------------------------------------------------------------
 IDLE, PTT, TAP_WAIT, HANDSFREE, BUSY = range(5)
@@ -1136,20 +906,8 @@ PAUSE_BLOCKS = 12         # 600 ms of silence
 
 
 def beep(kind, enabled):
-    if not enabled:
-        return
-
-    def run():
-        try:
-            if kind == "start":
-                winsound.Beep(700, 35); winsound.Beep(940, 45)
-            elif kind == "stop":
-                winsound.Beep(940, 35); winsound.Beep(700, 45)
-            else:
-                winsound.Beep(400, 80)
-        except Exception:
-            pass
-    threading.Thread(target=run, daemon=True).start()
+    if enabled:
+        threading.Thread(target=plat.play_beep, args=(kind,), daemon=True).start()
 
 
 class Job:
@@ -1437,7 +1195,7 @@ class Controller(threading.Thread):
         self.paste(text, editable=editable)
 
     def paste(self, text, editable=None, force=False):
-        wait_keys_released(self.app.hook.combo_vks | {0x10, 0x11, 0x12, 0x5B, 0x5C})
+        wait_keys_released(self.app.hook.combo_vks | plat.MODIFIER_VKS)
         if not force and self.cfg["smart_paste"] and editable is False:
             pyperclip.copy(text)
             self.ui("popup", text)
@@ -1450,7 +1208,7 @@ class Controller(threading.Thread):
                 old = None
         pyperclip.copy(text)
         time.sleep(0.03)
-        press_ctrl_v()
+        press_paste()
         if old:
             def restore():
                 time.sleep(0.6)
@@ -1467,18 +1225,14 @@ class Controller(threading.Thread):
 # --------------------------------------------------------------------------
 class Overlay:
     W, H = 330, 50
-    KEY = "#010203"
+    KEY = plat.OVERLAY_KEY
 
     def __init__(self, root, recorder, scale, hotkey_text):
         self.root, self.rec, self.s = root, recorder, scale
         self.hotkey_text = hotkey_text
         self.w, self.h = int(self.W * scale), int(self.H * scale)
         self.win = tk.Toplevel(root)
-        self.win.overrideredirect(True)
-        self.win.attributes("-topmost", True)
-        self.win.configure(bg=self.KEY)
-        self.win.attributes("-transparentcolor", self.KEY)
-        self.win.attributes("-alpha", 0.96)
+        plat.init_overlay(self.win, self.KEY)
         self.cv = tk.Canvas(self.win, width=self.w, height=self.h, bg=self.KEY, highlightthickness=0)
         self.cv.pack()
         self.mode, self.msg = None, ""
@@ -1492,19 +1246,20 @@ class Overlay:
         self._animate()
 
     def offscreen(self):
-        self.win.geometry(f"{self.w}x{self.h}+-4000+-4000")
+        plat.hide_overlay(self.win, self.w, self.h)
 
     def _size(self):
         if self.live_text and self.mode in ("rec", "hands", "busy"):
-            l, t, r, b = work_area()
+            l, t, r, b = work_area(self.root)
             return min(int(620 * self.s), r - l - 40), int(104 * self.s)
         return self.base_w, self.base_h
 
     def place(self):
         self.w, self.h = self._size()
         self.cv.config(width=self.w, height=self.h)
-        l, t, r, b = work_area()
+        l, t, r, b = work_area(self.root)
         self.win.geometry(f"{self.w}x{self.h}+{l + (r - l - self.w) // 2}+{b - self.h - int(28 * self.s)}")
+        plat.show_overlay(self.win)
         self.win.attributes("-topmost", True)
 
     def set_live(self, text):
@@ -1616,16 +1371,10 @@ class App:
         self.root = tk.Tk()
         self.root.withdraw()
         self.root.title(APP)
-        try:
-            self.root.iconbitmap(default=resource("assets/kotha.ico"))
-        except Exception:
-            pass
+        plat.set_window_icon(self.root, resource)
         self.scale = max(1.0, self.root.winfo_fpixels("1i") / 96.0)
         style = ttk.Style(self.root)
-        try:
-            style.theme_use("vista")
-        except Exception:
-            pass
+        plat.style_theme(style)
         style.configure(".", font=(FONT, 10))
         style.configure("Title.TLabel", font=(FONT, 12, "bold"))
         style.configure("Hint.TLabel", foreground="#666666", font=(FONT, 9))
@@ -1701,9 +1450,9 @@ class App:
         w.attributes("-topmost", True)
         w.configure(bg="#ffffff")
         ww, wh = int(440 * s), int(240 * s)
-        l, t, r, b = work_area()
+        l, t, r, b = work_area(self.root)
         w.geometry(f"{ww}x{wh}+{r - ww - int(20 * s)}+{b - wh - int(20 * s)}")
-        tk.Label(w, text="বসানোর মতো টেক্সট বক্স পাইনি। টেক্সট ক্লিপবোর্ডে কপি করা আছে, যেকোনো জায়গায় Ctrl+V দাও।",
+        tk.Label(w, text=f"বসানোর মতো টেক্সট বক্স পাইনি। টেক্সট ক্লিপবোর্ডে কপি করা আছে, যেকোনো জায়গায় {PASTE_KEYS} দাও।",
                  bg="#ffffff", fg="#555", font=(FONT, 9), wraplength=ww - 30, justify="left"
                  ).pack(anchor="w", padx=14, pady=(12, 6))
         txt = tk.Text(w, wrap="word", font=(FONT, 11), height=5, relief="solid", bd=1)
@@ -1720,15 +1469,18 @@ class App:
         w.bind("<Escape>", lambda e: w.destroy())
         w.lift()
         w.focus_force()
+        plat.bring_to_front()
 
     # ---- history ----
     def open_history(self):
         if self.history_win and self.history_win.winfo_exists():
             self.history_win.lift()
+            plat.bring_to_front()
             return
         s = self.scale
         w = tk.Toplevel(self.root)
         self.history_win = w
+        plat.bring_to_front()
         w.title(f"{APP} - History")
         w.geometry(f"{int(660 * s)}x{int(450 * s)}")
         pan = ttk.PanedWindow(w, orient="horizontal")
@@ -1793,6 +1545,7 @@ class App:
         if self.settings_win and self.settings_win.winfo_exists():
             self.settings_win.lift()
             self.settings_win.focus_force()
+            plat.bring_to_front()
             return
         cfg = self.cfg
         w = tk.Toplevel(self.root)
@@ -1935,9 +1688,17 @@ class App:
                           ("পেস্টের পর আগের ক্লিপবোর্ড ফিরিয়ে দাও", v_restore),
                           ("লম্বা কথা টুকরো করে আগেই পাঠাও (অনেক দ্রুত)", v_pipe),
                           ("শুরু/শেষে ছোট সাউন্ড", v_sound),
-                          ("Windows চালু হলে Kotha চালু হবে", v_start)]:
+                          (plat.START_AT_LOGIN_LABEL, v_start)]:
             ttk.Checkbutton(t4, text=text, variable=var).grid(row=r, column=1, sticky="w", pady=3)
             r += 1
+        if plat.IS_MAC:
+            ttk.Label(t4, text="Mac অনুমতি: শর্টকাট, পেস্ট ও মাইক্রোফোনের জন্য এই তিনটায় Kotha কে চালু করো",
+                      style="Hint.TLabel", wraplength=int(430 * self.scale), justify="left"
+                      ).grid(row=r, column=1, sticky="w", pady=(14, 2))
+            pbar = ttk.Frame(t4)
+            pbar.grid(row=r + 1, column=1, sticky="w")
+            for text, which in (("Input Monitoring", "input"), ("Accessibility", "accessibility"), ("Microphone", "mic")):
+                ttk.Button(pbar, text=text, command=lambda k=which: plat.open_privacy_pane(k)).pack(side="left", padx=(0, 6))
 
         # --- tab 5: advanced ---
         t5 = tab("অ্যাডভান্সড")
@@ -1952,7 +1713,7 @@ class App:
             entry(t5, i + 1, "Offline model ফোল্ডার", adv["local_model_path"])
             combo(t5, i + 2, "Offline device", adv["local_device"], ["auto", "cpu", "cuda"], width=30)
         else:
-            hint(t5, i, "Offline engine এই ভার্শনে নেই। দরকার হলে Kotha-Setup-Offline.exe ইনস্টল করো।")
+            hint(t5, i, plat.NO_OFFLINE_HINT)
 
         # --- tab 6: about ---
         t6 = tab("পরিচিতি")
@@ -1989,7 +1750,7 @@ class App:
         def save():
             prov = prov_by_label[v_prov.get()]
             if prov == "local" and not LOCAL_AVAILABLE:
-                messagebox.showwarning(APP, "Offline engine এর জন্য Kotha-Setup-Offline.exe ইনস্টল করতে হবে।", parent=w)
+                messagebox.showwarning(APP, plat.NO_OFFLINE_HINT, parent=w)
                 return
             if not hotkey_valid(hotkey):
                 messagebox.showwarning(APP, "শর্টকাটটা ঠিক নেই।", parent=w)
@@ -2019,6 +1780,8 @@ class App:
         ttk.Label(bar, text=f"Kotha {VERSION} · open source", style="Hint.TLabel").pack(side="left")
         ttk.Button(bar, text="Cancel", command=w.destroy).pack(side="right")
         ttk.Button(bar, text="Save", command=save).pack(side="right", padx=8)
+        if plat.IS_MAC:     # the menu-bar icon also has Quit; this is a fallback if the icon cannot be shown
+            ttk.Button(bar, text="Quit Kotha", command=self.quit).pack(side="right", padx=(0, 8))
 
         # credit strip, always visible at the bottom of Settings
         ttk.Separator(outer).pack(fill="x", pady=(12, 8))
@@ -2033,6 +1796,7 @@ class App:
         w.geometry(f"+{(sw - w.winfo_width()) // 2}+{max(0, (sh - w.winfo_height()) // 2 - 30)}")
         w.lift()
         w.focus_force()
+        plat.bring_to_front()
 
     def key_help(self, parent):
         d = tk.Toplevel(parent)
@@ -2076,7 +1840,12 @@ class App:
         threading.Thread(target=work, daemon=True).start()
 
     def run(self):
-        self.start_tray()
+        plat.request_permissions()
+        try:
+            self.start_tray()
+        except Exception as e:
+            log(f"tray icon failed: {e!r}")
+            self.ui_q.put(("settings",))
         self.hook.start()
         self.controller.start()
         set_startup(self.cfg["start_with_windows"])
@@ -2093,33 +1862,14 @@ class App:
 
 
 def set_startup(enabled):
-    key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
-    if getattr(sys, "frozen", False):
-        cmd = f'"{sys.executable}"'
-    else:
-        cmd = f'"{sys.executable.replace("python.exe", "pythonw.exe")}" "{os.path.abspath(__file__)}"'
-    try:
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_SET_VALUE) as k:
-            if enabled:
-                winreg.SetValueEx(k, APP, 0, winreg.REG_SZ, cmd)
-            else:
-                try:
-                    winreg.DeleteValue(k, APP)
-                except FileNotFoundError:
-                    pass
-    except Exception as e:
-        log(f"startup registry: {e}")
+    plat.set_startup(enabled, APP)
 
 
 def main():
-    kernel32.CreateMutexW(None, False, "Global\\KothaVoiceTyping_SingleInstance")
-    if ctypes.get_last_error() == 183:
-        ctypes.windll.user32.MessageBoxW(None, "Kotha আগে থেকেই চালু আছে (system tray দেখো)।", APP, 0x40)
+    if not plat.acquire_single_instance(APP):
+        plat.already_running_notice(APP)
         return
-    try:
-        ctypes.windll.shcore.SetProcessDpiAwareness(1)
-    except Exception:
-        pass
+    plat.setup_process()
     App().run()
 
 
