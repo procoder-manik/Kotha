@@ -66,7 +66,7 @@ else:
 
 APP = "Kotha"
 APP_BN = "কথা"
-VERSION = "2.4.0"
+VERSION = "2.4.1"
 CFG_VERSION = 3
 DATA_DIR = os.path.join(plat.USER_DATA_BASE, APP)
 MODELS_DIR = os.path.join(DATA_DIR, "models")
@@ -2219,6 +2219,8 @@ class FloatBar:
         self.cv.bind("<ButtonPress-1>", self._press)
         self.cv.bind("<B1-Motion>", self._motion)
         self.cv.bind("<ButtonRelease-1>", self._release)
+        self.cv.bind("<Motion>", self._on_motion)
+        self.cv.bind("<Leave>", self._on_leave)
         self.place()
         make_no_activate(self.win, click_through=False)
         self.draw()
@@ -2305,6 +2307,40 @@ class FloatBar:
             self.last_inside = time.monotonic()
             self.place()
             self.draw()
+            return
+        key = self._hit(e.x, e.y)
+        if key:
+            self._act(key)()
+
+    KEYS = ("mic", "rec", "notes", "settings")
+
+    def _btn_center(self, i):
+        return self.pad + self.btn // 2 + 1, self.pad + i * (self.btn + self.gap) + self.btn // 2
+
+    def _hit(self, x, y):
+        if not self.expanded:
+            return None
+        r2 = (self.btn // 2 + 2) ** 2
+        for i, key in enumerate(self.KEYS):
+            cx, cy = self._btn_center(i)
+            if (x - cx) ** 2 + (y - cy) ** 2 <= r2:
+                return key
+        return None
+
+    def _on_motion(self, e):
+        if not self.expanded or self.drag_from:
+            return
+        key = self._hit(e.x, e.y)
+        if key != self.hover:              # redraw only when the hovered button changes
+            self.hover = key
+            self.cv.config(cursor="hand2" if key else "")
+            self.draw()
+
+    def _on_leave(self, e):
+        if self.hover is not None:
+            self.hover = None
+            self.cv.config(cursor="")
+            self.draw()
 
     def _act(self, key):
         def go(_e=None):
@@ -2319,12 +2355,6 @@ class FloatBar:
             elif key == "settings":
                 self.app.open_settings()
             self.root.after(150, self.draw)
-        return go
-
-    def _set_hover(self, key):
-        def go(_e=None):
-            self.hover = key
-            self.draw()
         return go
 
     # ---- drawing ----
@@ -2371,10 +2401,8 @@ class FloatBar:
             cv.tag_raise(k)
             right = kb[2] + int(7 * s)
         top, bot = bb[1] - int(9 * s), bb[3] + int(9 * s)
-        bg = _round_rect(cv, x1, top, right + pad, bot, int(14 * s), fill="#171a21", outline="#343a49")
+        bg = _round_rect(cv, x1, top, right + pad, bot, int(14 * s), fill="#14181d", outline="#1f5f4b")
         cv.tag_lower(bg)
-        for item in cv.find_all():
-            pass
         self.rects.append((x1, top, right + pad, bot))
 
     def draw(self):
@@ -2387,28 +2415,28 @@ class FloatBar:
             cx, cy = self.cw // 2, self.ch // 2
             hw, hh = int(3.5 * s), int(22 * s)
             col = {"rec": "#ef4444" if pulse else "#b91c1c", "busy": "#8b5cf6",
-                   "detected": "#f59e0b" if pulse else "#b8791a"}.get(state, "#a7adb8")
+                   "detected": "#f59e0b" if pulse else "#b8791a"}.get(state, "#1f9d76")
             if self._dictating():
                 col = "#22c55e"
             _round_rect(cv, cx - hw, cy - hh, cx + hw, cy + hh, hw, fill=col, outline="")
             self.rects = [(0, 0, self.cw, self.ch)]
             return
-        pad, btn, gap = self.pad, self.btn, self.gap
-        _round_rect(cv, 1, 1, self.rail_w, self.eh - 1, self.rail_w // 2, fill="#14161c", outline="#343a49")
+        btn = self.btn
+        _round_rect(cv, 1, 1, self.rail_w, self.eh - 1, self.rail_w // 2, fill="#121519", outline="#1f5f4b")
         keys_dict = hotkey_label(self.app.cfg["hotkey"])
         note_keys = hotkey_label(self.app.cfg.get("note_hotkey", DEFAULT_NOTE_HOTKEY))
         items = [("mic", "mic"), ("rec", "stop" if state == "rec" else "rec"), ("notes", "notes"), ("settings", "gear")]
         self.rects.append((0, 0, self.rail_w + 6, self.eh))
         for i, (key, icon) in enumerate(items):
-            cx = pad + btn // 2 + 1
-            cy = pad + i * (btn + gap) + btn // 2
+            cx, cy = self._btn_center(i)
             hov = self.hover == key
             fill = "#262a35"
             ic = "#e8ecf4"
             ring = ""
             if key == "mic":
+                fill, ic = ("#18a87c" if hov else "#0b7a57"), "#ffffff"          # logo green
                 if self._dictating():
-                    fill, ic = "#16a34a", "#ffffff"
+                    fill = "#22c55e"
             if key == "rec":
                 if state == "rec":
                     fill, ic = ("#ef4444" if pulse else "#dc2626"), "#ffffff"
@@ -2426,11 +2454,7 @@ class FloatBar:
                            tags=("b_" + key,))
             self._icon(icon, cx, cy, ic)
             cv.create_oval(cx - r, cy - r, cx + r, cy + r, fill="", outline="", tags=("b_" + key,))
-            cv.tag_bind("b_" + key, "<ButtonRelease-1>", self._act(key))
-            cv.tag_bind("b_" + key, "<Enter>", self._set_hover(key))
-            cv.tag_bind("b_" + key, "<Leave>", self._set_hover(None))
             if hov:
-                cv.config(cursor="hand2")
                 if key == "mic":
                     self._label(cy, "কথা বলে লিখুন", "চেপে ধরুন · ক্লিকে হ্যান্ডস-ফ্রি", keys_dict)
                 elif key == "rec":
@@ -2448,8 +2472,6 @@ class FloatBar:
                     self._label(cy, "সব মিটিং নোট", "নোট, সারাংশ, ট্রান্সক্রিপ্ট")
                 else:
                     self._label(cy, "Settings", f"Kotha {VERSION}")
-        if self.hover is None:
-            cv.config(cursor="")
 
     def _tick(self):
         try:
@@ -2826,13 +2848,17 @@ class App:
             self.card.close()
         self.card = Card(self, title, body, [("খুলুন", lambda: self.open_notes(mid)), ("বন্ধ", None)], timeout=60)
 
-    def open_notes(self, select=None):
+    def open_notes(self, select=None, hidden=False):
         if self.notes_win and self.notes_win.winfo_exists():
-            self._show_window(self.notes_win)
+            if hidden:
+                return
             self._notes_reload(keep=select is None, select=select)
+            self._show_window(self.notes_win)
             return
         C = ui.C
         w = self._new_window(f"{APP} · মিটিং নোট", 1180, 760)
+        if hidden:
+            w.withdraw()
         w.minsize(860, 520)
         self.notes_win = w
         self._center(w)
@@ -2910,7 +2936,9 @@ class App:
         self._notes_tags()
         self._notes_reload(select=select)
         self._notes_tick()
-        self._show_window(w)
+        w.bind("<Destroy>", lambda e: e.widget is w and self._schedule_prebuild())
+        if not hidden:
+            self._show_window(w)
 
     def _notes_tags(self):
         t = self.n_box._textbox
@@ -2989,6 +3017,8 @@ class App:
                  if not q or q in (m.get("title", "") + m.get("app", "") + m.get("started", "")).lower()]
         for wd in self.n_listf.winfo_children():
             wd.destroy()
+        if len(metas) > 40:
+            metas = metas[:40]
         self.n_ids = [m["id"] for m in metas]
         self.n_cards = {}
         for m in metas:
@@ -3256,6 +3286,28 @@ class App:
         l, t, r, b = work_area(self.root)
         win.geometry(f"+{max(l, l + (r - l - ww) // 2)}+{max(t, t + (b - t - wh) // 2 - 10)}")
 
+    def _schedule_prebuild(self, delay=1500):
+        try:
+            if getattr(self, "_prebuild_job", None):
+                self.root.after_cancel(self._prebuild_job)
+            self._prebuild_job = self.root.after(delay, self._prebuild)
+        except Exception:
+            pass
+
+    def _prebuild(self):
+        """Keep Settings (and Meeting Notes) built but hidden, so opening them is instant."""
+        self._prebuild_job = None
+        try:
+            if not (self.settings_win and self.settings_win.winfo_exists()):
+                self.open_settings(hidden=True)
+            elif MEETING_SUPPORTED and not (self.notes_win and self.notes_win.winfo_exists()):
+                self.open_notes(hidden=True)
+            else:
+                return
+            self._schedule_prebuild(800)              # next one a little later, never both at once
+        except Exception as e:
+            log(f"prebuild: {e!r}")
+
     def _show_window(self, win):
         win.deiconify()
         win.lift()
@@ -3307,8 +3359,16 @@ class App:
         head.grid(row=0, column=0, columnspan=2, sticky="ew", padx=20, pady=(16, 8))
         ui.label(head, "History", 22, "semibold").pack(side="left")
         ui.label(head, "   শেষ ৩০০টা লেখা, শুধু আপনার কম্পিউটারে", 12, color=ui.C["muted"]).pack(side="left", pady=(6, 0))
-        lst = ctk.CTkScrollableFrame(w, width=300, fg_color="transparent", scrollbar_button_color=ui.C["surface3"])
-        lst.grid(row=1, column=0, sticky="nsw", padx=(14, 6), pady=(0, 16))
+        lf = ui.card(w, width=320)
+        lf.grid(row=1, column=0, sticky="nsw", padx=(14, 6), pady=(0, 16))
+        lf.grid_propagate(False)
+        lst = tk.Listbox(lf, font=(FONT, 11), activestyle="none", bg=ui.C["surface"], fg=ui.C["text"], bd=0,
+                         highlightthickness=0, selectbackground=ui.C["accent_soft"], selectforeground="#ffffff",
+                         exportselection=False, width=34)
+        sb = ctk.CTkScrollbar(lf, command=lst.yview, button_color=ui.C["surface3"])
+        lst.configure(yscrollcommand=sb.set)
+        sb.pack(side="right", fill="y", pady=8)
+        lst.pack(fill="both", expand=True, padx=(10, 0), pady=10)
         right = ui.card(w)
         right.grid(row=1, column=1, sticky="nsew", padx=(6, 16), pady=(0, 16))
         txt = ctk.CTkTextbox(right, font=ui.font(15), fg_color="transparent", wrap="word")
@@ -3319,27 +3379,17 @@ class App:
         meta.pack(side="left")
         ui.button(bar, "কপি করো", lambda: (pyperclip.copy(txt.get("1.0", "end").strip()),
                                          self.overlay.show("note", "কপি হয়েছে"))).pack(side="right")
-        items = self.history.items
-        rows = []
+        items = self.history.items[:300]
 
         def pick(i):
-            for k, r in enumerate(rows):
-                r.configure(fg_color=ui.C["surface2"] if k == i else "transparent",
-                            border_color=ui.C["accent"] if k == i else ui.C["surface"])
             txt.delete("1.0", "end")
             txt.insert("1.0", items[i]["text"])
             meta.configure(text=f"{items[i]['t']}  ·  {len(items[i]['text'])} অক্ষর")
-        for i, it in enumerate(items[:300]):
-            r = ctk.CTkFrame(lst, fg_color="transparent", corner_radius=10, border_width=1, border_color=ui.C["surface"])
-            r.pack(fill="x", pady=2)
-            a = ui.label(r, it["text"].replace("\n", " ")[:52], 13)
-            a.pack(anchor="w", padx=10, pady=(6, 0))
-            b = ui.label(r, it["t"], 11, color=ui.C["faint"])
-            b.pack(anchor="w", padx=10, pady=(0, 6))
-            for wd in (r, a, b):
-                wd.bind("<Button-1>", lambda e, i=i: pick(i))
-            rows.append(r)
+        for it in items:                         # a plain list stays fast with hundreds of entries
+            lst.insert("end", f"  {it['t'][5:]}   {it['text'].replace(chr(10), ' ')[:44]}")
+        lst.bind("<<ListboxSelect>>", lambda e: lst.curselection() and pick(lst.curselection()[0]))
         if items:
+            lst.selection_set(0)
             pick(0)
         else:
             txt.insert("1.0", "এখনো কিছু লেখা হয়নি। শর্টকাট চেপে ধরে কথা বলুন।")
@@ -3382,15 +3432,20 @@ class App:
         d.after(200, d.grab_set)
 
     # ---- settings ----
-    def open_settings(self, page=None):
+    def open_settings(self, page=None, hidden=False):
+        """hidden=True builds the window in the background so the next open is instant."""
         if self.settings_win and self.settings_win.winfo_exists():
-            self._show_window(self.settings_win)
+            if hidden:
+                return
             if page and getattr(self, "_settings_go", None):
                 self._settings_go(page)
+            self._show_window(self.settings_win)
             return
         cfg = self.cfg
         C = ui.C
         w = self._new_window(f"{APP} Settings", 1000, 680)
+        if hidden:
+            w.withdraw()
         w.minsize(780, 520)
         self.settings_win = w
 
@@ -3501,7 +3556,12 @@ class App:
                                         scrollbar_button_hover_color=C["border"])
             pages[key] = pg
 
+        builders, built = {}, set()
+
         def go(key):
+            if key not in built and key in builders:
+                built.add(key)
+                builders[key]()
             for k, b in nav_btns.items():
                 sel = k == key
                 b.configure(fg_color=C["accent_soft"] if sel else "transparent",
@@ -3517,269 +3577,285 @@ class App:
         self._settings_go = go
 
         # ---------- page: start ----------
-        p = pages["start"]
-        hero = ui.card(p, fg_color=C["accent_soft"], border_color=ui.adj("#3b2f63"))
-        hero.pack(fill="x", pady=(4, 6))
-        hl = ctk.CTkFrame(hero, fg_color="transparent")
-        hl.pack(fill="x", padx=20, pady=16)
-        ui.label(hl, "কথা বলুন, লেখা হয়ে যাবে", 19, "semibold").pack(anchor="w")
-        ui.label(hl, "যেকোনো অ্যাপে ক্লিক করুন, শর্টকাট চেপে ধরে কথা বলুন, ছেড়ে দিন। দুইবার চাপলে হ্যান্ডস-ফ্রি, "
-                     "Esc চাপলে বাতিল।", 13, color=C["accent_text"], wrap=560).pack(anchor="w", pady=(2, 8))
-        kc = ctk.CTkFrame(hl, fg_color="transparent")
-        kc.pack(anchor="w")
-        for i, part in enumerate(hotkey_label(cfg["hotkey"]).split(" + ")):
-            if i:
-                ui.label(kc, "+", 14, "semibold", color=C["accent_text"]).pack(side="left", padx=6)
-            ui.keycap(kc, part).pack(side="left")
-
-        s1 = ui.section(p, "Engine")
-        ui.setting_row(s1, "Engine", "কোন সার্ভিস দিয়ে লেখা হবে। Gemini Live সবচেয়ে দ্রুত, লেখা সাথে সাথে আসে।",
-                       lambda f: ui.select(f, v_prov, prov_labels, width=360), first=True)
-        ctk.CTkFrame(s1, height=10, width=1, fg_color="transparent").pack()
-
-        s2 = ui.section(p, "Gemini API key (ফ্রি)")
-        kr = ctk.CTkFrame(s2, fg_color="transparent")
-        kr.pack(fill="x", padx=18, pady=(16, 6))
-        ui.entry(kr, v_gk, show="•", width=420, placeholder="AIza… key এখানে পেস্ট করুন").pack(side="left", fill="x", expand=True)
-        kb = ctk.CTkFrame(s2, fg_color="transparent")
-        kb.pack(fill="x", padx=18, pady=(4, 4))
-        key_status = ui.label(kb, "", 12, color=C["muted"])
-
-        def test_key():
-            key_status.configure(text="চেক করছি…", text_color=C["muted"])
-
-            def run():
-                ok, msg = check_gemini_key(v_gk.get())
-                self.root.after(0, lambda: key_status.configure(
-                    text=("✓  key ঠিক আছে" if msg == "OK" else f"✓  {msg}") if ok else f"✗  {msg[:90]}",
-                    text_color="#86efac" if ok else "#fca5a5"))
-            threading.Thread(target=run, daemon=True).start()
-        ui.button(kb, "ফ্রি key নাও  ↗", lambda: webbrowser.open(GEMINI_KEY_URL), kind="soft").pack(side="left")
-        ui.button(kb, "Key চেক করো", test_key, kind="ghost").pack(side="left", padx=8)
-        key_status.pack(side="left", padx=6)
-        ui.label(s2, "Google অ্যাকাউন্ট দিয়ে aistudio.google.com এ ঢুকে 'Create API key' চাপুন, key কপি করে এখানে বসান। "
-                     "পুরোপুরি ফ্রি, কার্ড লাগে না।", 12, color=C["muted"], wrap=600).pack(anchor="w", padx=18, pady=(6, 2))
-        ui.button(s2, "key কাজ করছে না? এখানে দেখুন", lambda: self.key_help(w), kind="link", height=28).pack(
-            anchor="w", padx=10, pady=(0, 12))
-
-        s3 = ui.section(p, "ব্যাকআপ")
-        ui.setting_row(s3, "Groq key (ঐচ্ছিক)", "Gemini এর দিনের ফ্রি লিমিট শেষ হলে Kotha নিজে থেকে Groq দিয়ে চালাবে। এটাও ফ্রি।",
-                       lambda f: ui.entry(f, adv["groq_api_key"], show="•", width=260), first=True)
-        ui.button(s3, "ফ্রি Groq key নাও  ↗", lambda: webbrowser.open("https://console.groq.com/keys"),
-                  kind="link", height=28).pack(anchor="w", padx=10, pady=(0, 12))
-
-        # ---------- page: language ----------
-        p = pages["lang"]
-        s = ui.section(p, "ভাষা")
-        ui.setting_row(s, "যে ভাষায় বলবেন", "Auto রাখলে বাংলা, English, মিক্স, Hindi সহ ৮৫টার বেশি ভাষা নিজে চিনে নেবে।",
-                       lambda f: ui.select(f, v_lang, lang_labels, width=300), first=True)
-        ui.setting_row(s, "মিক্স লেখার ধরন", "Gemini Flash, Groq, OpenAI ও Offline engine এ কাজ করে।",
-                       lambda f: ui.select(f, v_style, style_opts, width=300))
-        ctk.CTkFrame(s, height=8, width=1, fg_color="transparent").pack()
-        s = ui.section(p, "লেখার মান")
-        ui.setting_row(s, "Smart লেখা", "আ, আহ, um বাদ দেয়, ভুল শুধরে নেয়, সুন্দর করে সাজায়।",
-                       lambda f: ui.switch(f, v_fill), first=True)
-        ui.setting_row(s, "বিশেষ শব্দ ও নাম", "কমা দিয়ে লিখুন। যেমন: Storeganise, Dhanmondi, তাহমিদ",
-                       lambda f: ui.entry(f, v_words, width=280))
-        ctk.CTkFrame(s, height=8, width=1, fg_color="transparent").pack()
-
-        # ---------- page: shortcut ----------
-        p = pages["keys"]
-        s = ui.section(p, "কথা বলার শর্টকাট")
-
-        def hk_control(f):
-            box = ctk.CTkFrame(f, fg_color="transparent")
-
-            def on_preset(choice):
-                for pr in HOTKEY_PRESETS:
-                    if hotkey_label(pr) == choice:
-                        hotkey[:] = pr
-            ui.select(box, v_hk, [hotkey_label(pr) for pr in HOTKEY_PRESETS], width=220, command=on_preset).pack(side="left")
-
-            def set_custom(tokens):
-                hotkey[:] = tokens
-                v_hk.set(hotkey_label(tokens))
-            ui.button(box, "নিজের শর্টকাট…", lambda: self.capture_hotkey(w, set_custom), kind="ghost").pack(side="left", padx=(8, 0))
-            return box
-        ui.setting_row(s, "রেকর্ডিং শর্টকাট", "চেপে ধরে কথা বলুন, ছেড়ে দিলে লেখা হবে। দুইবার চাপলে হ্যান্ডস-ফ্রি, আবার চাপলে শেষ।",
-                       hk_control, first=True)
-        ctk.CTkFrame(s, height=8, width=1, fg_color="transparent").pack()
-        tip = ui.card(p, fg_color=C["surface"])
-        tip.pack(fill="x", pady=8)
-        ui.label(tip, "💡  Wispr Flow বা অন্য অ্যাপের সাথে একই শর্টকাট রাখবেন না।", 13, color=C["muted"]).pack(
-            anchor="w", padx=18, pady=14)
-
-        # ---------- page: general ----------
-        p = pages["general"]
-        s = ui.section(p, "মাইক্রোফোন")
-        ui.setting_row(s, "Microphone", "কোন মাইক দিয়ে শুনবে।", lambda f: ui.select(f, v_mic, mics, width=300), first=True)
-        ctk.CTkFrame(s, height=8, width=1, fg_color="transparent").pack()
-        s = ui.section(p, "লেখা বসানো")
-        rows = [("টেক্সট বক্স না পেলে পপআপে দেখাও", "লেখা ক্লিপবোর্ডে থাকবে, পরে পেস্ট করতে পারবেন।", v_smart),
-                ("পেস্টের পর আগের ক্লিপবোর্ড ফিরিয়ে দাও", None, v_restore),
-                ("লম্বা কথা টুকরো করে আগেই পাঠাও", "অনেক দ্রুত হয়।", v_pipe),
-                ("শুরু/শেষে ছোট সাউন্ড", None, v_sound),
-                (plat.START_AT_LOGIN_LABEL, None, v_start)]
-        for i, (t, d, var) in enumerate(rows):
-            ui.setting_row(s, t, d, lambda f, var=var: ui.switch(f, var), first=(i == 0))
-        ctk.CTkFrame(s, height=8, width=1, fg_color="transparent").pack()
-        if plat.IS_MAC:
-            s = ui.section(p, "Mac অনুমতি", "শর্টকাট, পেস্ট ও মাইক্রোফোনের জন্য প্রথম তিনটা। মিটিংয়ে অন্যদের কণ্ঠ "
-                                           "শোনার জন্য Screen Recording ও চালু করুন (macOS 13+), তারপর Kotha আবার খুলুন।")
-            pb = ctk.CTkFrame(s, fg_color="transparent")
-            pb.pack(anchor="w", padx=18, pady=12)
-            for text, which in (("Input Monitoring", "input"), ("Accessibility", "accessibility"),
-                                ("Microphone", "mic"), ("Screen Recording", "screen")):
-                ui.button(pb, text, lambda k=which: plat.open_privacy_pane(k), kind="ghost").pack(side="left", padx=(0, 6))
-
-        # ---------- page: meeting notes ----------
-        if MEETING_SUPPORTED:
-            p = pages["meeting"]
+        def _page_start():
+            p = pages["start"]
             hero = ui.card(p, fg_color=C["accent_soft"], border_color=ui.adj("#3b2f63"))
             hero.pack(fill="x", pady=(4, 6))
             hl = ctk.CTkFrame(hero, fg_color="transparent")
             hl.pack(fill="x", padx=20, pady=16)
-            ui.label(hl, "মিটিংয়ের নোট ও সারাংশ, নিজে থেকেই", 18, "semibold").pack(anchor="w")
-            ui.label(hl, "Google Meet, Zoom, Teams, Slack, Discord, WhatsApp সব মিটিংয়ে। আপনার মাইক আর অন্যদের কণ্ঠ "
-                         "দুটোই শোনে, প্রতি মিনিটে লিখে রাখে, শেষে সারাংশ, মূল পয়েন্ট, সিদ্ধান্ত আর করণীয় দেয়।",
-                     13, color=C["accent_text"], wrap=580).pack(anchor="w", pady=(2, 10))
-            ui.button(hl, "মিটিং নোটগুলো দেখুন  →", self.open_notes, kind="primary").pack(anchor="w")
-            s = ui.section(p, "চালু / বন্ধ")
-            ui.setting_row(s, "মিটিং নোট চালু রাখো", None, lambda f: ui.switch(f, v_notes), first=True)
-            ui.setting_row(s, "বাম পাশে ভাসমান Kotha বাটন", "মাউস নিলে শর্টকাট আর নোট শুরুর বাটন দেখায়।",
-                           lambda f: ui.switch(f, v_float))
-            ctk.CTkFrame(s, height=8, width=1, fg_color="transparent").pack()
-            s = ui.section(p, "মিটিং শনাক্ত করা")
-            ui.setting_row(s, "মিটিং শুরু হলে", "কোনো কল অ্যাপ মাইক চালু করলে Kotha বুঝতে পারে।",
-                           lambda f: ui.select(f, v_detect, list(detect_opts.values()), width=290), first=True)
-            ui.setting_row(s, "মিটিং শেষ হলে নোটও নিজে থেকে বন্ধ", None, lambda f: ui.switch(f, v_autostop))
-            ctk.CTkFrame(s, height=8, width=1, fg_color="transparent").pack()
-            s = ui.section(p, "নোট")
+            ui.label(hl, "কথা বলুন, লেখা হয়ে যাবে", 19, "semibold").pack(anchor="w")
+            ui.label(hl, "যেকোনো অ্যাপে ক্লিক করুন, শর্টকাট চেপে ধরে কথা বলুন, ছেড়ে দিন। দুইবার চাপলে হ্যান্ডস-ফ্রি, "
+                         "Esc চাপলে বাতিল।", 13, color=C["accent_text"], wrap=560).pack(anchor="w", pady=(2, 8))
+            kc = ctk.CTkFrame(hl, fg_color="transparent")
+            kc.pack(anchor="w")
+            for i, part in enumerate(hotkey_label(cfg["hotkey"]).split(" + ")):
+                if i:
+                    ui.label(kc, "+", 14, "semibold", color=C["accent_text"]).pack(side="left", padx=6)
+                ui.keycap(kc, part).pack(side="left")
 
-            def nhk_control(f):
+            s1 = ui.section(p, "Engine")
+            ui.setting_row(s1, "Engine", "কোন সার্ভিস দিয়ে লেখা হবে। Gemini Live সবচেয়ে দ্রুত, লেখা সাথে সাথে আসে।",
+                           lambda f: ui.select(f, v_prov, prov_labels, width=360), first=True)
+            ctk.CTkFrame(s1, height=10, width=1, fg_color="transparent").pack()
+
+            s2 = ui.section(p, "Gemini API key (ফ্রি)")
+            kr = ctk.CTkFrame(s2, fg_color="transparent")
+            kr.pack(fill="x", padx=18, pady=(16, 6))
+            ui.entry(kr, v_gk, show="•", width=420, placeholder="AIza… key এখানে পেস্ট করুন").pack(side="left", fill="x", expand=True)
+            kb = ctk.CTkFrame(s2, fg_color="transparent")
+            kb.pack(fill="x", padx=18, pady=(4, 4))
+            key_status = ui.label(kb, "", 12, color=C["muted"])
+
+            def test_key():
+                key_status.configure(text="চেক করছি…", text_color=C["muted"])
+
+                def run():
+                    ok, msg = check_gemini_key(v_gk.get())
+                    self.root.after(0, lambda: key_status.configure(
+                        text=("✓  key ঠিক আছে" if msg == "OK" else f"✓  {msg}") if ok else f"✗  {msg[:90]}",
+                        text_color="#86efac" if ok else "#fca5a5"))
+                threading.Thread(target=run, daemon=True).start()
+            ui.button(kb, "ফ্রি key নাও  ↗", lambda: webbrowser.open(GEMINI_KEY_URL), kind="soft").pack(side="left")
+            ui.button(kb, "Key চেক করো", test_key, kind="ghost").pack(side="left", padx=8)
+            key_status.pack(side="left", padx=6)
+            ui.label(s2, "Google অ্যাকাউন্ট দিয়ে aistudio.google.com এ ঢুকে 'Create API key' চাপুন, key কপি করে এখানে বসান। "
+                         "পুরোপুরি ফ্রি, কার্ড লাগে না।", 12, color=C["muted"], wrap=600).pack(anchor="w", padx=18, pady=(6, 2))
+            ui.button(s2, "key কাজ করছে না? এখানে দেখুন", lambda: self.key_help(w), kind="link", height=28).pack(
+                anchor="w", padx=10, pady=(0, 12))
+
+            s3 = ui.section(p, "ব্যাকআপ")
+            ui.setting_row(s3, "Groq key (ঐচ্ছিক)", "Gemini এর দিনের ফ্রি লিমিট শেষ হলে Kotha নিজে থেকে Groq দিয়ে চালাবে। এটাও ফ্রি।",
+                           lambda f: ui.entry(f, adv["groq_api_key"], show="•", width=260), first=True)
+            ui.button(s3, "ফ্রি Groq key নাও  ↗", lambda: webbrowser.open("https://console.groq.com/keys"),
+                      kind="link", height=28).pack(anchor="w", padx=10, pady=(0, 12))
+        builders["start"] = _page_start
+
+        # ---------- page: language ----------
+        def _page_lang():
+            p = pages["lang"]
+            s = ui.section(p, "ভাষা")
+            ui.setting_row(s, "যে ভাষায় বলবেন", "Auto রাখলে বাংলা, English, মিক্স, Hindi সহ ৮৫টার বেশি ভাষা নিজে চিনে নেবে।",
+                           lambda f: ui.select(f, v_lang, lang_labels, width=300), first=True)
+            ui.setting_row(s, "মিক্স লেখার ধরন", "Gemini Flash, Groq, OpenAI ও Offline engine এ কাজ করে।",
+                           lambda f: ui.select(f, v_style, style_opts, width=300))
+            ctk.CTkFrame(s, height=8, width=1, fg_color="transparent").pack()
+            s = ui.section(p, "লেখার মান")
+            ui.setting_row(s, "Smart লেখা", "আ, আহ, um বাদ দেয়, ভুল শুধরে নেয়, সুন্দর করে সাজায়।",
+                           lambda f: ui.switch(f, v_fill), first=True)
+            ui.setting_row(s, "বিশেষ শব্দ ও নাম", "কমা দিয়ে লিখুন। যেমন: Storeganise, Dhanmondi, তাহমিদ",
+                           lambda f: ui.entry(f, v_words, width=280))
+            ctk.CTkFrame(s, height=8, width=1, fg_color="transparent").pack()
+        builders["lang"] = _page_lang
+
+        # ---------- page: shortcut ----------
+        def _page_keys():
+            p = pages["keys"]
+            s = ui.section(p, "কথা বলার শর্টকাট")
+
+            def hk_control(f):
                 box = ctk.CTkFrame(f, fg_color="transparent")
 
                 def on_preset(choice):
-                    for pr in NOTE_HOTKEY_PRESETS:
+                    for pr in HOTKEY_PRESETS:
                         if hotkey_label(pr) == choice:
-                            note_hotkey[:] = pr
-                ui.select(box, v_nhk, [hotkey_label(pr) for pr in NOTE_HOTKEY_PRESETS], width=190,
-                          command=on_preset).pack(side="left")
+                            hotkey[:] = pr
+                ui.select(box, v_hk, [hotkey_label(pr) for pr in HOTKEY_PRESETS], width=220, command=on_preset).pack(side="left")
 
                 def set_custom(tokens):
-                    note_hotkey[:] = tokens
-                    v_nhk.set(hotkey_label(tokens))
-                ui.button(box, "নিজের…", lambda: self.capture_hotkey(w, set_custom), kind="ghost").pack(side="left", padx=(8, 0))
+                    hotkey[:] = tokens
+                    v_hk.set(hotkey_label(tokens))
+                ui.button(box, "নিজের শর্টকাট…", lambda: self.capture_hotkey(w, set_custom), kind="ghost").pack(side="left", padx=(8, 0))
                 return box
-            ui.setting_row(s, "নোট শুরু / শেষের শর্টকাট", None, nhk_control, first=True)
-            ui.setting_row(s, "নোটের ভাষা", None, lambda f: ui.select(f, v_nlang, list(nlang_opts.values()), width=230))
-            ui.setting_row(s, "মিটিংয়ের অডিও ফাইলও রেখে দাও", "meeting.wav হিসেবে নোটের ফোল্ডারে থাকবে।",
-                           lambda f: ui.switch(f, v_keep))
+            ui.setting_row(s, "রেকর্ডিং শর্টকাট", "চেপে ধরে কথা বলুন, ছেড়ে দিলে লেখা হবে। দুইবার চাপলে হ্যান্ডস-ফ্রি, আবার চাপলে শেষ।",
+                           hk_control, first=True)
             ctk.CTkFrame(s, height=8, width=1, fg_color="transparent").pack()
-            note = ui.card(p, fg_color=C["amber_soft"], border_color=ui.adj("#5a4110"))
-            note.pack(fill="x", pady=8)
-            ui.label(note, "🔒  রেকর্ড করার আগে মিটিংয়ের সবাইকে জানিয়ে রাখুন। নোট আর অডিও শুধু আপনার কম্পিউটারে থাকে; "
-                           "লেখার জন্য অডিও আপনার নিজের Gemini/Groq key দিয়ে পাঠানো হয়।", 12,
-                     color="#fde68a", wrap=600).pack(anchor="w", padx=18, pady=14)
+            tip = ui.card(p, fg_color=C["surface"])
+            tip.pack(fill="x", pady=8)
+            ui.label(tip, "💡  Wispr Flow বা অন্য অ্যাপের সাথে একই শর্টকাট রাখবেন না।", 13, color=C["muted"]).pack(
+                anchor="w", padx=18, pady=14)
+        builders["keys"] = _page_keys
+
+        # ---------- page: general ----------
+        def _page_general():
+            p = pages["general"]
+            s = ui.section(p, "মাইক্রোফোন")
+            ui.setting_row(s, "Microphone", "কোন মাইক দিয়ে শুনবে।", lambda f: ui.select(f, v_mic, mics, width=300), first=True)
+            ctk.CTkFrame(s, height=8, width=1, fg_color="transparent").pack()
+            s = ui.section(p, "লেখা বসানো")
+            rows = [("টেক্সট বক্স না পেলে পপআপে দেখাও", "লেখা ক্লিপবোর্ডে থাকবে, পরে পেস্ট করতে পারবেন।", v_smart),
+                    ("পেস্টের পর আগের ক্লিপবোর্ড ফিরিয়ে দাও", None, v_restore),
+                    ("লম্বা কথা টুকরো করে আগেই পাঠাও", "অনেক দ্রুত হয়।", v_pipe),
+                    ("শুরু/শেষে ছোট সাউন্ড", None, v_sound),
+                    (plat.START_AT_LOGIN_LABEL, None, v_start)]
+            for i, (t, d, var) in enumerate(rows):
+                ui.setting_row(s, t, d, lambda f, var=var: ui.switch(f, var), first=(i == 0))
+            ctk.CTkFrame(s, height=8, width=1, fg_color="transparent").pack()
+            if plat.IS_MAC:
+                s = ui.section(p, "Mac অনুমতি", "শর্টকাট, পেস্ট ও মাইক্রোফোনের জন্য প্রথম তিনটা। মিটিংয়ে অন্যদের কণ্ঠ "
+                                               "শোনার জন্য Screen Recording ও চালু করুন (macOS 13+), তারপর Kotha আবার খুলুন।")
+                pb = ctk.CTkFrame(s, fg_color="transparent")
+                pb.pack(anchor="w", padx=18, pady=12)
+                for text, which in (("Input Monitoring", "input"), ("Accessibility", "accessibility"),
+                                    ("Microphone", "mic"), ("Screen Recording", "screen")):
+                    ui.button(pb, text, lambda k=which: plat.open_privacy_pane(k), kind="ghost").pack(side="left", padx=(0, 6))
+        builders["general"] = _page_general
+
+        # ---------- page: meeting notes ----------
+        def _page_meeting():
+            if MEETING_SUPPORTED:
+                p = pages["meeting"]
+                hero = ui.card(p, fg_color=C["accent_soft"], border_color=ui.adj("#3b2f63"))
+                hero.pack(fill="x", pady=(4, 6))
+                hl = ctk.CTkFrame(hero, fg_color="transparent")
+                hl.pack(fill="x", padx=20, pady=16)
+                ui.label(hl, "মিটিংয়ের নোট ও সারাংশ, নিজে থেকেই", 18, "semibold").pack(anchor="w")
+                ui.label(hl, "Google Meet, Zoom, Teams, Slack, Discord, WhatsApp সব মিটিংয়ে। আপনার মাইক আর অন্যদের কণ্ঠ "
+                             "দুটোই শোনে, প্রতি মিনিটে লিখে রাখে, শেষে সারাংশ, মূল পয়েন্ট, সিদ্ধান্ত আর করণীয় দেয়।",
+                         13, color=C["accent_text"], wrap=580).pack(anchor="w", pady=(2, 10))
+                ui.button(hl, "মিটিং নোটগুলো দেখুন  →", self.open_notes, kind="primary").pack(anchor="w")
+                s = ui.section(p, "চালু / বন্ধ")
+                ui.setting_row(s, "মিটিং নোট চালু রাখো", None, lambda f: ui.switch(f, v_notes), first=True)
+                ui.setting_row(s, "বাম পাশে ভাসমান Kotha বাটন", "মাউস নিলে শর্টকাট আর নোট শুরুর বাটন দেখায়।",
+                               lambda f: ui.switch(f, v_float))
+                ctk.CTkFrame(s, height=8, width=1, fg_color="transparent").pack()
+                s = ui.section(p, "মিটিং শনাক্ত করা")
+                ui.setting_row(s, "মিটিং শুরু হলে", "কোনো কল অ্যাপ মাইক চালু করলে Kotha বুঝতে পারে।",
+                               lambda f: ui.select(f, v_detect, list(detect_opts.values()), width=290), first=True)
+                ui.setting_row(s, "মিটিং শেষ হলে নোটও নিজে থেকে বন্ধ", None, lambda f: ui.switch(f, v_autostop))
+                ctk.CTkFrame(s, height=8, width=1, fg_color="transparent").pack()
+                s = ui.section(p, "নোট")
+
+                def nhk_control(f):
+                    box = ctk.CTkFrame(f, fg_color="transparent")
+
+                    def on_preset(choice):
+                        for pr in NOTE_HOTKEY_PRESETS:
+                            if hotkey_label(pr) == choice:
+                                note_hotkey[:] = pr
+                    ui.select(box, v_nhk, [hotkey_label(pr) for pr in NOTE_HOTKEY_PRESETS], width=190,
+                              command=on_preset).pack(side="left")
+
+                    def set_custom(tokens):
+                        note_hotkey[:] = tokens
+                        v_nhk.set(hotkey_label(tokens))
+                    ui.button(box, "নিজের…", lambda: self.capture_hotkey(w, set_custom), kind="ghost").pack(side="left", padx=(8, 0))
+                    return box
+                ui.setting_row(s, "নোট শুরু / শেষের শর্টকাট", None, nhk_control, first=True)
+                ui.setting_row(s, "নোটের ভাষা", None, lambda f: ui.select(f, v_nlang, list(nlang_opts.values()), width=230))
+                ui.setting_row(s, "মিটিংয়ের অডিও ফাইলও রেখে দাও", "meeting.wav হিসেবে নোটের ফোল্ডারে থাকবে।",
+                               lambda f: ui.switch(f, v_keep))
+                ctk.CTkFrame(s, height=8, width=1, fg_color="transparent").pack()
+                note = ui.card(p, fg_color=C["amber_soft"], border_color=ui.adj("#5a4110"))
+                note.pack(fill="x", pady=8)
+                ui.label(note, "🔒  রেকর্ড করার আগে মিটিংয়ের সবাইকে জানিয়ে রাখুন। নোট আর অডিও শুধু আপনার কম্পিউটারে থাকে; "
+                               "লেখার জন্য অডিও আপনার নিজের Gemini/Groq key দিয়ে পাঠানো হয়।", 12,
+                         color="#fde68a", wrap=600).pack(anchor="w", padx=18, pady=14)
+        builders["meeting"] = _page_meeting
 
         # ---------- page: advanced ----------
-        p = pages["advanced"]
-        s = ui.section(p, "মডেল")
-        for i, (title, k, show) in enumerate([("Gemini Transcribe model", "gemini_tx_model", ""),
-                                               ("Gemini Flash model", "gemini_model", ""),
-                                               ("Groq model", "groq_model", "")]):
-            ui.setting_row(s, title, None, lambda f, k=k, show=show: ui.entry(f, adv[k], show=show, width=300), first=(i == 0))
-        ctk.CTkFrame(s, height=8, width=1, fg_color="transparent").pack()
-        s = ui.section(p, "OpenAI (পেইড)")
-        ui.setting_row(s, "OpenAI API key", None, lambda f: ui.entry(f, adv["openai_api_key"], show="•", width=300), first=True)
-        ui.setting_row(s, "OpenAI model", None, lambda f: ui.entry(f, adv["openai_model"], width=300))
-        ctk.CTkFrame(s, height=8, width=1, fg_color="transparent").pack()
-        s = ui.section(p, "Offline")
-        if LOCAL_AVAILABLE:
-            ui.setting_row(s, "Offline model", None, lambda f: ui.select(
-                f, adv["local_model"], ["large-v3-turbo", "large-v3", "medium", "small"], width=220), first=True)
-            ui.setting_row(s, "Offline model ফোল্ডার", None, lambda f: ui.entry(f, adv["local_model_path"], width=300))
-            ui.setting_row(s, "Offline device", None, lambda f: ui.select(f, adv["local_device"], ["auto", "cpu", "cuda"], width=160))
-        else:
-            ui.label(s, plat.NO_OFFLINE_HINT, 12, color=C["muted"], wrap=600).pack(anchor="w", padx=18, pady=14)
-        ctk.CTkFrame(s, height=8, width=1, fg_color="transparent").pack()
+        def _page_advanced():
+            p = pages["advanced"]
+            s = ui.section(p, "মডেল")
+            for i, (title, k, show) in enumerate([("Gemini Transcribe model", "gemini_tx_model", ""),
+                                                   ("Gemini Flash model", "gemini_model", ""),
+                                                   ("Groq model", "groq_model", "")]):
+                ui.setting_row(s, title, None, lambda f, k=k, show=show: ui.entry(f, adv[k], show=show, width=300), first=(i == 0))
+            ctk.CTkFrame(s, height=8, width=1, fg_color="transparent").pack()
+            s = ui.section(p, "OpenAI (পেইড)")
+            ui.setting_row(s, "OpenAI API key", None, lambda f: ui.entry(f, adv["openai_api_key"], show="•", width=300), first=True)
+            ui.setting_row(s, "OpenAI model", None, lambda f: ui.entry(f, adv["openai_model"], width=300))
+            ctk.CTkFrame(s, height=8, width=1, fg_color="transparent").pack()
+            s = ui.section(p, "Offline")
+            if LOCAL_AVAILABLE:
+                ui.setting_row(s, "Offline model", None, lambda f: ui.select(
+                    f, adv["local_model"], ["large-v3-turbo", "large-v3", "medium", "small"], width=220), first=True)
+                ui.setting_row(s, "Offline model ফোল্ডার", None, lambda f: ui.entry(f, adv["local_model_path"], width=300))
+                ui.setting_row(s, "Offline device", None, lambda f: ui.select(f, adv["local_device"], ["auto", "cpu", "cuda"], width=160))
+            else:
+                ui.label(s, plat.NO_OFFLINE_HINT, 12, color=C["muted"], wrap=600).pack(anchor="w", padx=18, pady=14)
+            ctk.CTkFrame(s, height=8, width=1, fg_color="transparent").pack()
+        builders["advanced"] = _page_advanced
 
         # ---------- page: support ----------
-        p = pages["support"]
-        warm = ui.card(p, fg_color=C["accent_soft"])
-        warm.pack(fill="x", pady=(4, 8))
-        wl = ctk.CTkFrame(warm, fg_color="transparent")
-        wl.pack(fill="x", padx=22, pady=18)
-        ui.label(wl, "☕  Kotha আপনার কাজে লাগলে", 19, "semibold").pack(anchor="w")
-        ui.label(wl, "Kotha বানানো আর ঠিক রাখতে সময় আর খরচ লাগে, তবুও এটা সবার জন্য ফ্রি। আপনি যদি এটা ব্যবহার করে "
-                     "উপকার পেয়ে থাকেন আর চান, একটা কফির দাম পাঠিয়ে আমাদের পাশে থাকতে পারেন। এতে নতুন ফিচার আর "
-                     "Mac, মিটিং নোটের মতো কাজগুলো এগিয়ে নিতে সুবিধা হয়।", 13, color=C["accent_text"], wrap=620
-                 ).pack(anchor="w", pady=(6, 8))
-        ui.label(wl, "না পাঠালেও কোনো সমস্যা নেই, Kotha আপনার জন্যই। আপনার ধন্যবাদটুকুই অনেক। ❤", 13, "medium",
-                 color=C["text"], wrap=620).pack(anchor="w")
-        pay = ui.card(p)
-        pay.pack(fill="x", pady=4)
-        ui.label(pay, "Send Money · Personal নাম্বার", 12, color=C["muted"]).pack(anchor="w", padx=22, pady=(16, 0))
-        nr = ctk.CTkFrame(pay, fg_color="transparent")
-        nr.pack(fill="x", padx=22, pady=(2, 8))
-        ui.label(nr, SUPPORT_NUMBER_TEXT, 26, "semibold").pack(side="left")
-        copy_btn = ui.button(nr, "⧉  কপি", None, kind="soft", height=36)
-        copy_btn.pack(side="left", padx=14)
+        def _page_support():
+            p = pages["support"]
+            warm = ui.card(p, fg_color=C["accent_soft"])
+            warm.pack(fill="x", pady=(4, 8))
+            wl = ctk.CTkFrame(warm, fg_color="transparent")
+            wl.pack(fill="x", padx=22, pady=18)
+            ui.label(wl, "☕  Kotha আপনার কাজে লাগলে", 19, "semibold").pack(anchor="w")
+            ui.label(wl, "Kotha বানানো আর ঠিক রাখতে সময় আর খরচ লাগে, তবুও এটা সবার জন্য ফ্রি। আপনি যদি এটা ব্যবহার করে "
+                         "উপকার পেয়ে থাকেন আর চান, একটা কফির দাম পাঠিয়ে আমাদের পাশে থাকতে পারেন। এতে নতুন ফিচার আর "
+                         "Mac, মিটিং নোটের মতো কাজগুলো এগিয়ে নিতে সুবিধা হয়।", 13, color=C["accent_text"], wrap=620
+                     ).pack(anchor="w", pady=(6, 8))
+            ui.label(wl, "না পাঠালেও কোনো সমস্যা নেই, Kotha আপনার জন্যই। আপনার ধন্যবাদটুকুই অনেক। ❤", 13, "medium",
+                     color=C["text"], wrap=620).pack(anchor="w")
+            pay = ui.card(p)
+            pay.pack(fill="x", pady=4)
+            ui.label(pay, "Send Money · Personal নাম্বার", 12, color=C["muted"]).pack(anchor="w", padx=22, pady=(16, 0))
+            nr = ctk.CTkFrame(pay, fg_color="transparent")
+            nr.pack(fill="x", padx=22, pady=(2, 8))
+            ui.label(nr, SUPPORT_NUMBER_TEXT, 26, "semibold").pack(side="left")
+            copy_btn = ui.button(nr, "⧉  কপি", None, kind="soft", height=36)
+            copy_btn.pack(side="left", padx=14)
 
-        def copy_number():
-            pyperclip.copy(SUPPORT_NUMBER)
-            copy_btn.configure(text="✓  কপি হয়েছে")
-            w.after(1800, lambda: copy_btn.configure(text="⧉  কপি"))
-        copy_btn.configure(command=copy_number)
-        wr = ctk.CTkFrame(pay, fg_color="transparent")
-        wr.pack(fill="x", padx=22, pady=(0, 6))
-        for name, col in SUPPORT_WALLETS:
-            ctk.CTkLabel(wr, text=f"  {name}  ·  Personal  ", font=ui.font(13, "semibold"), text_color="#ffffff",
-                         fg_color=col, corner_radius=14, height=34).pack(side="left", padx=(0, 8))
-        ui.label(pay, "bKash, Rocket আর Nagad, তিনটাতেই এই একই নাম্বার। যেকোনো একটা দিয়ে Send Money করতে পারেন। "
-                      "পরিমাণ পুরোপুরি আপনার ইচ্ছা।", 12, color=C["muted"], wrap=620).pack(anchor="w", padx=22, pady=(4, 18))
-        other = ui.card(p, fg_color=C["surface"])
-        other.pack(fill="x", pady=8)
-        ui.label(other, "টাকা ছাড়াও সাহায্য করা যায়", 14, "semibold").pack(anchor="w", padx=22, pady=(16, 4))
-        ui.label(other, "• GitHub এ একটা ⭐ দিন\n• বন্ধুদের বা সহকর্মীদের Kotha এর কথা বলুন\n"
-                        "• কোনো সমস্যা বা নতুন আইডিয়া থাকলে জানান", 13, color=C["muted"], wrap=620).pack(anchor="w", padx=22)
-        ob = ctk.CTkFrame(other, fg_color="transparent")
-        ob.pack(anchor="w", padx=22, pady=(10, 18))
-        ui.button(ob, "GitHub এ ⭐  ↗", lambda: webbrowser.open("https://github.com/procoder-manik/Kotha"),
-                  kind="ghost").pack(side="left")
-        ui.button(ob, "WhatsApp এ জানান", lambda: webbrowser.open(WHATSAPP_URL), kind="ghost").pack(side="left", padx=8)
+            def copy_number():
+                pyperclip.copy(SUPPORT_NUMBER)
+                copy_btn.configure(text="✓  কপি হয়েছে")
+                w.after(1800, lambda: copy_btn.configure(text="⧉  কপি"))
+            copy_btn.configure(command=copy_number)
+            wr = ctk.CTkFrame(pay, fg_color="transparent")
+            wr.pack(fill="x", padx=22, pady=(0, 6))
+            for name, col in SUPPORT_WALLETS:
+                ctk.CTkLabel(wr, text=f"  {name}  ·  Personal  ", font=ui.font(13, "semibold"), text_color="#ffffff",
+                             fg_color=col, corner_radius=14, height=34).pack(side="left", padx=(0, 8))
+            ui.label(pay, "bKash, Rocket আর Nagad, তিনটাতেই এই একই নাম্বার। যেকোনো একটা দিয়ে Send Money করতে পারেন। "
+                          "পরিমাণ পুরোপুরি আপনার ইচ্ছা।", 12, color=C["muted"], wrap=620).pack(anchor="w", padx=22, pady=(4, 18))
+            other = ui.card(p, fg_color=C["surface"])
+            other.pack(fill="x", pady=8)
+            ui.label(other, "টাকা ছাড়াও সাহায্য করা যায়", 14, "semibold").pack(anchor="w", padx=22, pady=(16, 4))
+            ui.label(other, "• GitHub এ একটা ⭐ দিন\n• বন্ধুদের বা সহকর্মীদের Kotha এর কথা বলুন\n"
+                            "• কোনো সমস্যা বা নতুন আইডিয়া থাকলে জানান", 13, color=C["muted"], wrap=620).pack(anchor="w", padx=22)
+            ob = ctk.CTkFrame(other, fg_color="transparent")
+            ob.pack(anchor="w", padx=22, pady=(10, 18))
+            ui.button(ob, "GitHub এ ⭐  ↗", lambda: webbrowser.open("https://github.com/procoder-manik/Kotha"),
+                      kind="ghost").pack(side="left")
+            ui.button(ob, "WhatsApp এ জানান", lambda: webbrowser.open(WHATSAPP_URL), kind="ghost").pack(side="left", padx=8)
+        builders["support"] = _page_support
 
         # ---------- page: about ----------
-        p = pages["about"]
-        ab = ui.card(p)
-        ab.pack(fill="x", pady=(4, 8))
-        try:
-            self._logo96 = ui.image(resource("assets/kotha.png"), (96, 96))
-            ctk.CTkLabel(ab, image=self._logo96, text="").pack(pady=(26, 6))
-        except Exception:
-            pass
-        ui.label(ab, f"Kotha  ({APP_BN})", 28, "semibold").pack()
-        ui.label(ab, f"Version {VERSION}  ·  Open source (MIT)", 12, color=C["muted"]).pack()
-        ui.label(ab, "বাংলা, English আর মিক্স ভাষায় দ্রুত, ফ্রি ভয়েস টাইপিং ও মিটিং নোট", 14,
-                 color=C["accent_text"]).pack(pady=(8, 20))
-        dev = ui.card(p, fg_color=C["surface"])
-        dev.pack(fill="x", pady=4)
-        dl = ctk.CTkFrame(dev, fg_color="transparent")
-        dl.pack(fill="x", padx=20, pady=18)
-        ui.label(dl, "Developed by", 12, "medium", color=C["faint"]).pack(anchor="w")
-        nm = ui.label(dl, DEV_NAME, 22, "semibold")
-        nm.pack(anchor="w")
-        ui.bind_link(nm, lambda: webbrowser.open(DEV_URL))
-        ag2 = ui.label(dl, f"Part of {AGENCY_NAME}", 14, color=C["accent_text"])
-        ag2.pack(anchor="w", pady=(0, 12))
-        ui.bind_link(ag2, lambda: webbrowser.open(AGENCY_URL))
-        br = ctk.CTkFrame(dl, fg_color="transparent")
-        br.pack(anchor="w")
-        ui.button(br, f"🌐  {DEV_SITE}", lambda: webbrowser.open(DEV_URL)).pack(side="left")
-        ui.button(br, f"WhatsApp  {WHATSAPP_TEXT}", lambda: webbrowser.open(WHATSAPP_URL), kind="ghost").pack(side="left", padx=8)
-        ui.button(br, "GitHub  ↗", lambda: webbrowser.open("https://github.com/procoder-manik/Kotha"),
-                  kind="ghost").pack(side="left")
-        ui.button(br, "☕  Buy me a coffee", lambda: go("support"), kind="soft").pack(side="left", padx=8)
+        def _page_about():
+            p = pages["about"]
+            ab = ui.card(p)
+            ab.pack(fill="x", pady=(4, 8))
+            try:
+                self._logo96 = ui.image(resource("assets/kotha.png"), (96, 96))
+                ctk.CTkLabel(ab, image=self._logo96, text="").pack(pady=(26, 6))
+            except Exception:
+                pass
+            ui.label(ab, f"Kotha  ({APP_BN})", 28, "semibold").pack()
+            ui.label(ab, f"Version {VERSION}  ·  Open source (MIT)", 12, color=C["muted"]).pack()
+            ui.label(ab, "বাংলা, English আর মিক্স ভাষায় দ্রুত, ফ্রি ভয়েস টাইপিং ও মিটিং নোট", 14,
+                     color=C["accent_text"]).pack(pady=(8, 20))
+            dev = ui.card(p, fg_color=C["surface"])
+            dev.pack(fill="x", pady=4)
+            dl = ctk.CTkFrame(dev, fg_color="transparent")
+            dl.pack(fill="x", padx=20, pady=18)
+            ui.label(dl, "Developed by", 12, "medium", color=C["faint"]).pack(anchor="w")
+            nm = ui.label(dl, DEV_NAME, 22, "semibold")
+            nm.pack(anchor="w")
+            ui.bind_link(nm, lambda: webbrowser.open(DEV_URL))
+            ag2 = ui.label(dl, f"Part of {AGENCY_NAME}", 14, color=C["accent_text"])
+            ag2.pack(anchor="w", pady=(0, 12))
+            ui.bind_link(ag2, lambda: webbrowser.open(AGENCY_URL))
+            br = ctk.CTkFrame(dl, fg_color="transparent")
+            br.pack(anchor="w")
+            ui.button(br, f"🌐  {DEV_SITE}", lambda: webbrowser.open(DEV_URL)).pack(side="left")
+            ui.button(br, f"WhatsApp  {WHATSAPP_TEXT}", lambda: webbrowser.open(WHATSAPP_URL), kind="ghost").pack(side="left", padx=8)
+            ui.button(br, "GitHub  ↗", lambda: webbrowser.open("https://github.com/procoder-manik/Kotha"),
+                      kind="ghost").pack(side="left")
+            ui.button(br, "☕  Buy me a coffee", lambda: go("support"), kind="soft").pack(side="left", padx=8)
+        builders["about"] = _page_about
 
         # ---------- footer ----------
         foot = ctk.CTkFrame(w, fg_color="transparent")
@@ -3833,9 +3909,14 @@ class App:
         ui.button(foot, "Cancel", w.destroy, kind="ghost", width=100).pack(side="right", padx=8)
         if plat.IS_MAC:
             ui.button(foot, "Quit Kotha", self.quit, kind="danger").pack(side="right", padx=(0, 8))
-        go(page or ("start" if not cfg.ready() else "start"))
+        go(page or "start")
         self._center(w)
-        self._show_window(w)
+        w.bind("<Destroy>", lambda e: e.widget is w and self._schedule_prebuild())
+        if hidden:
+            for i, k in enumerate(list(builders)):         # the other pages, one at a time while idle
+                w.after(250 * (i + 1), lambda k=k: w.winfo_exists() and k not in built and (built.add(k), builders[k]()))
+        else:
+            self._show_window(w)
 
     def key_help(self, parent):
         d = ctk.CTkToplevel(parent)
@@ -3908,6 +3989,7 @@ class App:
             self.overlay.show("note", f"{APP_BN} চালু হয়েছে। {hotkey_label(self.cfg['hotkey'])} চেপে কথা বলো")
             prewarm(self.cfg["provider"])
         self.root.after(25, self.pump)
+        self._schedule_prebuild(3000)
         self.root.mainloop()
 
 
@@ -4009,6 +4091,14 @@ def selftest(ui_check=False):
                     fb.place()
                     fb.draw()
                     pump(0.1)
+                # hover regression test: moving over the buttons must not start an endless redraw loop
+                t = time.time()
+                for i in range(len(fb.KEYS)):
+                    cx, cy = fb._btn_center(i)
+                    for dx in (0, 2, -2):
+                        fb.cv.event_generate("<Motion>", x=cx + dx, y=cy)
+                pump(0.6)
+                out.append(f"hover test {time.time() - t:.2f}s")
                 fb.expanded = False
                 fb.place()
                 fb.draw()
