@@ -1,28 +1,29 @@
-## Kotha 2.3.0: AI meeting notes + a brand-new premium design
+## Kotha 2.4.0: meeting notes on Mac too, a new floating handle and a cleaner design
 
-Free, open-source voice typing for Bangla, English and the mix of both, now with automatic meeting notes on Windows.
+Free, open-source voice typing and AI meeting notes for Bangla, English and the mix of both. Windows and macOS.
 
 ### Download
 
 | System | File |
 |---|---|
-| Windows 10/11 | **Kotha-Windows-Setup.exe** (recommended) |
-| Windows 10/11, with offline Whisper | Kotha-Windows-Offline-Setup.exe |
-| Mac, Apple Silicon (M1/M2/M3/M4) | **Kotha-Mac-AppleSilicon.dmg** (voice typing) |
-| Mac, Intel | Kotha-Mac-Intel.dmg (voice typing) |
+| **Windows 10/11** | **Kotha-Windows-Setup.exe** (recommended) |
+| Windows, with offline Whisper | Kotha-Windows-Offline-Setup.exe |
+| **Mac, Apple Silicon** (M1/M2/M3/M4) | **Kotha-Mac-AppleSilicon.dmg** |
+| **Mac, Intel** | Kotha-Mac-Intel.dmg |
 
-You need a free Gemini API key. The step-by-step guide is in the [README](https://github.com/procoder-manik/Kotha#setup-guide-get-a-free-gemini-api-key-2-minutes).
+You need a free Gemini API key. Step-by-step guide: [README](https://github.com/procoder-manik/Kotha#get-your-free-gemini-api-key).
 
 ### What's new
-- **AI meeting notes (Windows):** works with Google Meet, Zoom, Teams, Slack, Discord, WhatsApp and more. Records your mic (**আমি**) and the call audio (**Speaker 1, 2…**), writes the transcript every minute, and at the end gives a title, summary, key points, decisions and action items.
-- **Finds meetings by itself:** when a call app opens the microphone, Kotha asks "নোট নেবো?". Start/stop any time with **Win + Alt + M**.
-- **Floating button** on the left edge: hover for shortcuts and a one-click start/stop.
-- **Premium redesign:** Windows 11 glass (Mica), dark theme, Hind Siliguri font, new Settings, Meeting Notes and History windows.
-- **Faster and more reliable:** updated to the current Gemini models (the old gemini-2.5 models were retired), with automatic fallbacks.
+- **AI meeting notes on Mac** (macOS 13+ for the other people's voices): same as Windows. Records your mic and the call audio, transcribes every minute, and at the end gives title, summary, key points, decisions and action items. Needs the **Screen Recording** permission, only to hear the sound your Mac plays. Kotha does not record your screen.
+- **New floating handle:** a thin line on the left edge of the screen. Hover and it opens into round buttons: hands-free dictation, meeting notes, all notes, settings. Drag it up or down.
+- **Cleaner, rounder design** on Windows and Mac, with Windows 11 glass, the Hind Siliguri font and a new **সাপোর্ট** page.
+- **Mac:** meeting detection (call app open + microphone in use), menu-bar app, permission buttons in Settings.
+- **Self-test:** every build is now opened and checked on real Windows and macOS machines before release.
+- Renamed files: `Kotha-Windows-*.exe` and `Kotha-Mac-*.dmg`.
 
-### Notes
+### Good to know
+- **Mac first launch:** the app is not notarized by Apple. Right-click Kotha > Open. Then allow Input Monitoring, Accessibility, Microphone and Screen Recording, and reopen Kotha. Details in the [Mac guide](https://github.com/procoder-manik/Kotha#macos-guide).
 - Tell everyone in the meeting before you record. Notes stay on your computer.
-- Meeting notes are Windows-only for now; the Mac app has voice typing.
-- The Mac app is not notarized by Apple. First launch: right-click Kotha > Open.
+- The Mac meeting-notes feature was verified on a real Apple Silicon Mac in automated testing (system audio captured), but it is new: please report problems in Issues.
 
 Developed by [Manik Hossain](https://www.manikhossain.in/), part of [NextGen Agency](https://www.nextgenagency.co/).
