@@ -1,0 +1,30 @@
+# Build output
+build/
+dist/
+dist_lite/
+dist_full/
+output/
+*.spec
+
+# Installers: upload these to GitHub Releases, not to the repository
+*.exe
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+
+# Local data and secrets: never commit these
+config.json
+history.json
+*.log
+.env
+*.key
+
+# Editors and OS
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store

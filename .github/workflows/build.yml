@@ -1,0 +1,27 @@
+name: Build Kotha installers
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+jobs:
+  build:
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        edition: [lite, offline]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install NSIS
+        run: choco install nsis -y --no-progress
+      - name: Build
+        shell: cmd
+        run: |
+          set PATH=%PATH%;C:\Program Files (x86)\NSIS
+          if "${{ matrix.edition }}"=="offline" (echo.| call build.bat offline) else (echo.| call build.bat)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Kotha-${{ matrix.edition }}
+          path: output/*.exe

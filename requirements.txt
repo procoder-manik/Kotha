@@ -1,0 +1,8 @@
+sounddevice
+requests
+websocket-client
+truststore
+pyperclip
+pystray
+Pillow
+uiautomation
