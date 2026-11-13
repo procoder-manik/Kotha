@@ -24,6 +24,7 @@ import array
 import base64
 import ctypes
 import queue
+import subprocess
 import threading
 import webbrowser
 import importlib.util
@@ -65,7 +66,7 @@ else:
 
 APP = "Kotha"
 APP_BN = "কথা"
-VERSION = "2.3.0"
+VERSION = "2.4.0"
 CFG_VERSION = 3
 DATA_DIR = os.path.join(plat.USER_DATA_BASE, APP)
 MODELS_DIR = os.path.join(DATA_DIR, "models")
@@ -3948,6 +3949,31 @@ def selftest(ui_check=False):
         check("pcm conversion", lambda: bool(plat._cm()) and "CoreMedia functions bound")
         check("mic in use (CoreAudio)", lambda: plat.mic_in_use_somewhere())
     check("meeting detection", lambda: plat.active_meetings("", False))
+
+    def capture():
+        """Record 5 s of mic + system audio with the real MeetingRecorder while a sound plays."""
+        import numpy as np
+        import tempfile
+        folder = tempfile.mkdtemp(prefix="kotha_cap_")
+        rec = MeetingRecorder(folder)
+        rec.start()
+        time.sleep(1.5)
+        if plat.IS_MAC:
+            subprocess.Popen(["afplay", "/System/Library/Sounds/Glass.aiff"])
+        else:
+            import winsound
+            winsound.PlaySound(r"C:\Windows\Media\Windows Notify System Generic.wav", winsound.SND_FILENAME | winsound.SND_ASYNC)
+        time.sleep(4.5)
+        info = f"alive={rec.alive} errors={rec.errors}"
+        rec.stop()
+        out = []
+        for k in ("mic", "sys"):
+            a = np.fromfile(rec.paths[k], dtype="<i2")
+            out.append(f"{k} {len(a) / SR:.1f}s peak={int(np.abs(a).max()) if len(a) else 0}")
+        import shutil
+        shutil.rmtree(folder, ignore_errors=True)
+        return ", ".join(out) + " | " + info
+    check("meeting recorder (5 s)", capture)
     check("fonts", lambda: f"loaded={ui.load_fonts(resource)} family={ui.FAMILY}")
     if ui_check:
         def windows():

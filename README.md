@@ -1,222 +1,276 @@
 <div align="center">
 
-<img src="assets/kotha.png" width="96" alt="Kotha voice typing app logo">
+<img src="assets/kotha.png" width="104" alt="Kotha voice typing and AI meeting notes app logo">
 
 # Kotha (কথা)
 
-**Free, open-source voice typing and AI meeting notes for Windows (voice typing on macOS too). Speak Bangla, English, or a natural mix of both, and the text appears wherever your cursor is.**
+### কথা বলুন, লেখা হয়ে যাবে।
+**Free, open-source voice typing and AI meeting notes for Bangla, English and the mix of both. Windows and macOS.**
 
-কথা বলুন, লেখা হয়ে যাবে।
+[![Windows](https://img.shields.io/badge/Download-Windows-006A4E?style=for-the-badge&logo=windows&logoColor=white)](../../releases/latest/download/Kotha-Windows-Setup.exe)
+[![Mac Apple Silicon](https://img.shields.io/badge/Download-Mac%20Apple%20Silicon-000000?style=for-the-badge&logo=apple&logoColor=white)](../../releases/latest/download/Kotha-Mac-AppleSilicon.dmg)
+[![Mac Intel](https://img.shields.io/badge/Download-Mac%20Intel-444444?style=for-the-badge&logo=apple&logoColor=white)](../../releases/latest/download/Kotha-Mac-Intel.dmg)
+[![License](https://img.shields.io/badge/License-MIT-8b5cf6?style=for-the-badge)](LICENSE)
 
-[![Download](https://img.shields.io/badge/Download-Windows-006A4E?style=for-the-badge&logo=windows)](../../releases/latest/download/Kotha-Windows-Setup.exe)
-[![Mac](https://img.shields.io/badge/Download-macOS%20(Apple%20Silicon)-000000?style=for-the-badge&logo=apple)](../../releases/latest/download/Kotha-Mac-AppleSilicon.dmg)
-[![Offline](https://img.shields.io/badge/Windows%20Offline-75%20MB-444?style=for-the-badge)](../../releases/latest/download/Kotha-Windows-Offline-Setup.exe)
-[![License](https://img.shields.io/badge/License-MIT-F42A41?style=for-the-badge)](LICENSE)
-
-<img src="docs/kotha-free-bangla-voice-typing-banner.png" alt="Kotha: free open-source Bangla and English voice typing app for Windows, by Manik Hossain" width="760">
+<img src="docs/kotha-free-bangla-voice-typing-banner.png" alt="Kotha: free open-source Bangla and English voice typing and meeting notes, by Manik Hossain" width="800">
 
 </div>
 
-## Why Kotha
+---
 
-- **Bangla first.** Built for people who think in Bangla and write in a mix of Bangla and English. 85+ languages are supported.
-- **Works everywhere.** Notepad, Word, WhatsApp Web, Gmail, VS Code, any text box. Kotha types the text for you. Windows and macOS.
-- **Fast.** Long speech is sent in pieces while you are still talking, the connection is opened the moment you press the shortcut, and silence is trimmed before upload.
-- **Free.** Uses a free Gemini API key. No card, no subscription.
-- **Open source.** MIT licensed. Read the code, change it, build it yourself.
-- **Private by choice.** Your key stays on your PC. Need fully offline dictation? Use the Offline edition.
+## What is Kotha?
+
+Kotha does two jobs in one small app that lives next to your clock.
+
+| | |
+|---|---|
+| 🎙 **Voice typing** | Click in any text box (Gmail, Word, WhatsApp Web, VS Code, anything), hold a shortcut, talk, let go. Your words are typed for you. Bangla, English, or both in one sentence. |
+| 📝 **AI meeting notes** | Join Google Meet, Zoom, Teams or any call. Kotha listens to your microphone and to the other people, writes it all down, and when the meeting ends gives you a title, summary, key points, decisions and action items. |
+
+It is **free** (you use your own free Gemini key), **open source** (MIT), and built **Bangla-first**: it understands Bangla, English and natural mixes like *"আমরা next week এ launch করবো"*.
+
+<div align="center">
+<img src="docs/screens/meeting-notes-window.png" alt="Kotha meeting notes window: summary, key points and transcript of a meeting" width="860">
+</div>
+
+## Contents
+
+[Download](#download) · [Quick start](#quick-start-3-minutes) · [Free Gemini key](#get-your-free-gemini-api-key) · [Voice typing](#voice-typing) · [Meeting notes](#meeting-notes) · [Floating handle](#the-floating-handle) · [Mac guide](#macos-guide) · [Settings](#settings) · [Privacy](#privacy-and-your-data) · [Troubleshooting](#troubleshooting) · [How it works](#how-it-works) · [Build](#build-from-source) · [Support](#support-kotha) · [Credits](#credits)
+
+---
 
 ## Download
 
-Get the latest installers from the **[Releases page](../../releases/latest)**.
+Always the newest version, straight from GitHub Releases:
 
-| File | System | Use it when |
+| Your computer | Download | Notes |
 |---|---|---|
-| [`Kotha-Windows-Setup.exe`](../../releases/latest/download/Kotha-Windows-Setup.exe) | Windows 10/11 | Recommended. Uses Gemini with a free API key. |
-| [`Kotha-Windows-Offline-Setup.exe`](../../releases/latest/download/Kotha-Windows-Offline-Setup.exe) | Windows 10/11 | You also want the offline Whisper engine (no internet needed, slower, weaker for Bangla). |
-| [`Kotha-Mac-AppleSilicon.dmg`](../../releases/latest/download/Kotha-Mac-AppleSilicon.dmg) | macOS 11+, Apple Silicon (M1/M2/M3/M4) | MacBooks and Macs from late 2020 onward. |
-| [`Kotha-Mac-Intel.dmg`](../../releases/latest/download/Kotha-Mac-Intel.dmg) | macOS 11+, Intel | Older Intel Macs. |
+| **Windows 10 / 11** | [**Kotha-Windows-Setup.exe**](../../releases/latest/download/Kotha-Windows-Setup.exe) | Recommended. About 23 MB. |
+| Windows, with offline engine | [Kotha-Windows-Offline-Setup.exe](../../releases/latest/download/Kotha-Windows-Offline-Setup.exe) | About 77 MB. Adds an offline Whisper engine (slower, weaker for Bangla). |
+| **Mac, Apple Silicon** (M1, M2, M3, M4) | [**Kotha-Mac-AppleSilicon.dmg**](../../releases/latest/download/Kotha-Mac-AppleSilicon.dmg) | macOS 11 or newer. Meeting audio needs macOS 13+. |
+| **Mac, Intel** | [Kotha-Mac-Intel.dmg](../../releases/latest/download/Kotha-Mac-Intel.dmg) | macOS 11 or newer. |
 
-Windows: no admin rights needed. Not sure which Mac you have? Apple menu > About This Mac: "Chip: Apple M..." means Apple Silicon.
+Not sure about your Mac? Apple menu > **About This Mac**. "Chip: Apple M…" means Apple Silicon.
+All releases and notes: [Releases page](../../releases).
 
-> Windows SmartScreen may warn about an unknown publisher because the installer is not code-signed. Click **More info** and then **Run anyway**.
+> **Windows SmartScreen** may say "unknown publisher" because the installer is not code-signed. Click **More info**, then **Run anyway**.
+> **Mac** will say the app is from an unidentified developer for the same reason. See the [Mac guide](#macos-guide).
 
-## Setup guide: get a free Gemini API key (2 minutes)
+## Quick start (3 minutes)
 
-Kotha needs a Gemini API key to turn your voice into text. It is free and does not need a card.
+1. **Install** Kotha (Windows: run the `.exe`. Mac: open the `.dmg`, drag Kotha to Applications).
+2. **Add a free Gemini key**: open Settings from the tray (Windows) or menu bar (Mac) icon, paste the key. [How to get one, 2 minutes](#get-your-free-gemini-api-key).
+3. **Talk.** Click in any text box, **hold Ctrl + Win** (Mac: **hold Right Option ⌥**), speak, release.
 
-**Step 1. Open Google AI Studio**
-Go to **https://aistudio.google.com/apikey** and sign in with your Google account.
+For meeting notes, just join a call. Kotha asks *"নোট নেবো?"*. Or press **Win + Alt + M** (Mac: **Control + Option + M**).
 
-**Step 2. Create the key in a new project**
-1. Click **Create API key**.
-2. Choose **Create API key in new project**.
-3. Copy the key that appears.
+## Get your free Gemini API key
 
-> **Important:** do not add billing or a card to this project. A key from a project with billing enabled is not free, and Kotha will show a "credits depleted" or "billing" error.
+Kotha turns speech into text with Google's Gemini. The key is free and needs no card.
 
-**Step 3. Paste it into Kotha**
-1. Install and open Kotha. It lives in the system tray (bottom-right of the taskbar).
-2. Right-click the tray icon and open **Settings** (or double-click the icon).
-3. In the **শুরু** tab, paste the key into **Gemini API key**.
-4. Click **Key চেক করো**. You should see a green **✓ key ঠিক আছে**.
-5. Click **Save**.
+1. Open **https://aistudio.google.com/apikey** and sign in with Google.
+2. Click **Create API key**, then **Create API key in new project**. Copy the key.
+3. In Kotha: **Settings > শুরু করুন**, paste the key into **Gemini API key**, click **Key চেক করো**. A green ✓ means it works. Click **Save**.
+
+> **Do not add billing or a card to that project.** A key from a project with billing is not free and Kotha will show a "billing" or "credits depleted" error.
 
 <div align="center">
-<img src="docs/kotha-settings-gemini-api-key-setup.png" alt="Kotha settings window: paste your free Gemini API key, click Key check, then Save" width="520">
+<img src="docs/screens/settings-start.png" alt="Kotha settings: paste your free Gemini API key, click Key check, then Save" width="760">
 </div>
 
-**Step 4. Start talking**
-1. Click into any text box.
-2. Hold **Ctrl + Win** (Mac: **Right Option**), speak, and release. The text is typed for you.
-3. Double-tap the shortcut for hands-free mode, press it again to finish.
-4. **Esc** cancels.
+**Backup key (optional):** the free Gemini tier has daily and per-minute limits. Add a free key from **https://console.groq.com/keys** in the Groq field and Kotha switches to it automatically when Gemini is busy.
 
-You can change the shortcut in the **শর্টকাট** tab (presets, or record your own).
+## Voice typing
 
-## macOS guide (2.2.2)
+| Do this | What happens |
+|---|---|
+| **Hold** the shortcut, talk, **release** | The text is typed at your cursor. |
+| **Double-tap** the shortcut | Hands-free mode. Press once more to finish. |
+| **Esc** while recording | Cancels. |
+| Click the 🎙 button on the [floating handle](#the-floating-handle) | Starts hands-free dictation. |
 
-Kotha for Mac lives in the **menu bar** (top right of the screen), not in the Dock.
+Default shortcut: **Ctrl + Win** on Windows, **Right Option ⌥** on Mac. Change it in **Settings > শর্টকাট** (presets, or press your own).
+No text box focused? A small popup shows the text and it is already on your clipboard.
+
+Good to know: Smart mode removes "um/আ/আহ", fixes self-corrections and punctuates (turn it off in **ভাষা ও লেখা**). Add names and brands to **বিশেষ শব্দ ও নাম** so they are spelled right.
+
+## Meeting notes
+
+<div align="center">
+<img src="docs/screens/settings-meeting-notes.png" alt="Kotha settings for meeting notes: detection, floating button, shortcut and language" width="760">
+</div>
+
+**What it does**
+
+- Works with **Google Meet, Zoom, Microsoft Teams, Slack, Discord, WhatsApp, Webex** and other call apps.
+- Records **your microphone** (labelled **আমি**) and **everything the computer plays**, which is the other people (**Speaker 1, Speaker 2, …**).
+- Meetings of **any length**: audio is saved to disk and transcribed **every minute while the meeting runs**, so the notes are ready seconds after you stop.
+- At the end you get: **title, summary, key points by topic, decisions, action items** (task, owner, due date) and open questions, in Bangla, English, or the meeting's own language. The full transcript with times and speakers is kept next to it.
+- Copy the notes, save them as Markdown, re-run the summary, or delete the meeting. Everything is under the tray icon > **মিটিং নোটগুলো**.
+
+**How to use**
+
+1. Join your meeting. When Kotha asks **"নোট নেবো?"**, click **হ্যাঁ, নোট নাও**. Or press **Win + Alt + M**, or use the [floating handle](#the-floating-handle).
+2. Talk as usual. Press the shortcut again (or the red button) when it ends. If the call app closes the call, Kotha stops by itself.
+3. A card says **মিটিং নোট তৈরি হয়েছে ✓**. Click **খুলুন**.
+
+**Detection** works by noticing that a call app is using your microphone (Windows reads this from the system's microphone-use list; Mac checks that a call app is open while the microphone is in use). Choose in Settings whether Kotha **asks**, **starts by itself**, or does nothing.
+
+> **Be fair to others.** Tell everyone in the meeting before you record, and follow your organisation's rules. Kotha records only on your computer, and only when notes are on.
+
+**Free-tier limits.** If Google's free quota is busy, Kotha keeps the audio, waits and retries. If something still fails, open the meeting and press **আবার প্রসেস করো**. A free Groq key as backup helps a lot.
+
+**Limits to know:** speaker labels are by voice and can occasionally mix up two people who sound alike; the notes are an AI summary, so check important numbers and decisions; on Mac, hearing the other people needs the **Screen Recording** permission (see below).
+
+## The floating handle
+
+A thin line sits on the left edge of your screen, out of the way. **Hover** and it opens into round buttons. **Drag** it up or down to move it.
+
+<div align="center">
+<img src="docs/screens/floating-handle-mic.png" alt="Kotha floating handle opened: microphone, meeting notes, all notes and settings buttons" width="330">
+<img src="docs/screens/floating-handle-meeting.png" alt="Floating handle: start meeting notes with Win Alt M" width="330">
+<img src="docs/screens/floating-handle-recording.png" alt="Floating handle while recording a meeting: stop button and timer" width="330">
+</div>
+
+| Button | What it does |
+|---|---|
+| 🎙 | Hands-free voice typing (click to start, click to finish). |
+| ● / ■ | Start or stop meeting notes. Turns amber when a meeting is detected, red while recording. |
+| ☰ | Open all meeting notes. |
+| ⚙ | Settings. |
+
+The line itself changes colour: grey (idle), amber (meeting found), red (recording), violet (making notes), green (dictating). Turn the handle off in **Settings > মিটিং নোট**.
+
+## macOS guide
+
+Kotha for Mac lives in the **menu bar** (top right), not the Dock.
 
 **1. Install**
 1. Open the `.dmg` and drag **Kotha** into **Applications**.
-2. The app is not notarized by Apple (it is a free open-source build). The first time, **right-click Kotha > Open > Open**.
-   If macOS still blocks it, run this once in Terminal, then open it again:
+2. The app is not notarized by Apple (it is a free open-source build). The first time: **right-click Kotha > Open > Open**. If macOS still blocks it, run this once in Terminal and open it again:
    ```bash
    xattr -cr /Applications/Kotha.app
    ```
 
-**2. Allow three permissions** (macOS asks on first use, or use the buttons in Kotha Settings > **সাধারণ**)
+**2. Allow the permissions** (macOS asks on first use; Settings > সাধারণ has buttons that open each page)
 
 | Permission | Why Kotha needs it |
 |---|---|
 | **Input Monitoring** | to notice when you hold the shortcut |
 | **Accessibility** | to paste the text into the app you are typing in |
 | **Microphone** | to hear you |
+| **Screen Recording** | only for meeting notes: it is how macOS lets an app hear the sound your Mac plays (the other people). Kotha does **not** record or save your screen. |
 
-Open **System Settings > Privacy & Security**, and switch **Kotha** on in each of the three lists. If the shortcut does nothing after you allow them, quit Kotha from the menu bar icon and open it again.
+Open **System Settings > Privacy & Security**, switch **Kotha** on in each list, then **quit and reopen Kotha** (macOS applies Screen Recording after a restart).
 
-**3. Add the free Gemini key**: follow the same steps as [the setup guide above](#setup-guide-get-a-free-gemini-api-key-2-minutes). Open Settings from the menu bar icon.
-
-**4. Talk.** Click in any text box, **hold Right Option (⌥)**, speak, release. Double-tap for hands-free mode. **Esc** cancels.
-Change the shortcut in Settings > **শর্টকাট**. Presets: Right Option, Control + Option, Control + Command, Right Control, Option + Command, F9.
+**3. Use it.** Hold **Right Option ⌥** to dictate. Meeting notes: **Control + Option + M**. Change both in Settings.
 
 | Mac problem | Fix |
 |---|---|
-| Nothing happens when I hold the key | Input Monitoring or Accessibility is off. Turn **Kotha** on in both, then quit and reopen Kotha. |
-| Text is not pasted, only a popup shows | Accessibility is off, or no text box is focused. The text is already on your clipboard, press **Cmd+V**. |
-| "No microphone" or nothing heard | Turn **Kotha** on under Microphone. Pick the right input in Settings > **সাধারণ**. |
-| "Kotha is damaged" or "cannot be opened" | Run `xattr -cr /Applications/Kotha.app` in Terminal. |
-| Bangla letters look wrong in Settings | Make sure the Bangla font (Kohinoor Bangla) is installed. It ships with macOS. |
+| Holding the key does nothing | Input Monitoring or Accessibility is off. Turn **Kotha** on in both, quit and reopen Kotha. |
+| Only a popup shows, nothing is pasted | Accessibility is off, or no text box is focused. The text is on your clipboard: press **Cmd+V**. |
+| Meeting notes only contain my voice | Turn **Kotha** on under **Screen Recording** (macOS 13 or newer), then reopen Kotha. |
+| "Kotha is damaged" / "cannot be opened" | `xattr -cr /Applications/Kotha.app` in Terminal. |
 
 Not available on Mac yet: the offline Whisper edition.
 
-### Optional: a free Groq key as backup
-Gemini's free tier has a daily limit. Add a free key from **https://console.groq.com/keys** in the **Groq key (ব্যাকআপ)** field. When the Gemini limit runs out, Kotha switches to Groq automatically.
+## Settings
 
-### Troubleshooting
+Open from the tray / menu bar icon, the floating handle ⚙, or by double-clicking the tray icon.
+
+| Page | What is inside |
+|---|---|
+| **শুরু করুন** | Engine, Gemini key (with a one-click check), Groq backup key. |
+| **ভাষা ও লেখা** | Language (Auto, Bangla, English, Hindi, …), mixed-script style, Smart mode, custom words and names. |
+| **শর্টকাট** | Dictation shortcut (presets or your own). |
+| **সাধারণ** | Microphone, popup when no text box, restore clipboard, chunked sending, sounds, start with the computer (Mac: permission buttons). |
+| **মিটিং নোট** | On/off, floating handle, detection (ask / auto / off), auto-stop, notes shortcut, notes language, keep the audio file. |
+| **অ্যাডভান্সড** | Model names, OpenAI key, offline model options. |
+| **সাপোর্ট** | Ways to support Kotha. |
+| **পরিচিতি** | Version, developer, links. |
+
+Engines: **Gemini Live** (default, text appears while you talk), Gemini Transcribe, Gemini Flash, Groq Whisper, OpenAI (paid), Offline Whisper (Windows offline edition).
+
+## Privacy and your data
+
+- **Your key, your account.** Audio goes from your computer to Google (or Groq / OpenAI if you choose them) with **your own** key. Kotha has no server and collects nothing. Free-tier audio may be used by Google to improve its products; use the offline edition for fully private dictation.
+- **Notes stay on your computer:** `%APPDATA%\Kotha\meetings` (Windows) or `~/Library/Application Support/Kotha/meetings` (Mac). Raw meeting audio is **deleted after the notes are made**, unless you turn on *keep audio*.
+- **No screen recording:** on Mac the Screen Recording permission is used only to receive the sound your Mac plays. Kotha does not capture or store images of your screen.
+- Delete any meeting any time from the notes window (notes, transcript and audio are removed).
+
+## Troubleshooting
 
 | Problem | Fix |
 |---|---|
-| "credits depleted" or "billing" error | Your key belongs to a project with billing. Create a new key with **Create API key in new project** and do not add a card. |
-| "ফ্রি লিমিট শেষ" (free limit reached) | Today's free quota is used up. Add a free Groq key as backup, or try again tomorrow. |
-| Nothing is typed | Click inside a text box first. If none is found, Kotha shows a popup and copies the text to your clipboard, so you can press Ctrl+V. |
-| Shortcut does nothing | Another app (for example Wispr Flow) may use the same shortcut. Pick a different one in the **শর্টকাট** tab. |
-| Wrong microphone | Choose the microphone in the **সাধারণ** tab. |
-| Proxy or network error | Check your Windows proxy settings and internet connection. |
+| "credits depleted" / "billing" | The key's project has billing. Make a new key with **Create API key in new project**, no card. |
+| "ফ্রি লিমিট শেষ" | Today's free quota is used. Add a free Groq key as backup, or try later. |
+| Nothing is typed | Click inside a text box first. If none is found Kotha shows a popup and copies the text. |
+| Shortcut does nothing | Another app may use it (for example Wispr Flow). Pick another in **শর্টকাট**. |
+| Wrong microphone | Choose it in **সাধারণ**. |
+| Notes missing the other people (Windows) | Make sure the call's sound plays through your speakers or headphones, and that the right output device is default. |
+| A meeting part says "লেখা হয়নি" | Free limit or network. Open the meeting and press **আবার প্রসেস করো**. |
+| Proxy / SSL / network errors | Check your proxy or VPN and your internet connection. |
 
-## Meeting notes (new in 2.3.0, Windows)
+Logs: `%APPDATA%\Kotha\kotha.log` (Windows), `~/Library/Application Support/Kotha/kotha.log` (Mac). Never share your API key.
 
-Kotha now also takes notes for your meetings, in the same app. Voice typing keeps working at the same time.
+## How it works
 
-- **Works with every call app**: Google Meet, Zoom, Microsoft Teams, Slack, Discord, WhatsApp, Webex and others.
-- **Hears everyone**: your microphone (marked **আমি**) and the call audio from your speakers or headphones (the other people, marked **Speaker 1, Speaker 2, ...**).
-- **Any length**: the audio is saved to disk and written down every 2 minutes while the meeting runs, so long meetings are fine.
-- **Clear notes at the end**: title, summary, key points by topic, decisions, action items (task, owner, due date) and open questions. In Bangla, English, or the meeting's own language.
-- **Finds your meetings**: when a call app starts using the microphone, Kotha asks *"নোট নেবো?"*. You can also make it start by itself, or turn this off.
-- **Floating button** on the left edge of the screen. Hover to see the shortcuts and a start/stop button; drag it up or down to move it.
+```
+ microphone ──────┐                                   ┌── voice typing: text pasted at your cursor
+                  ├─► Kotha (kotha.py) ── Gemini ───► ┤
+ call audio ──────┘     │  (your own key)              └── meeting notes: transcript every minute,
+  (loopback)            │                                  summary + key points at the end
+                        └─ plat_win.py / plat_mac.py: shortcuts, paste, call detection, tray
+```
 
-**How to use**
-
-1. Join your meeting. When Kotha asks, click **হ্যাঁ, নোট নাও**. Or press **Win + Alt + M**, or click the floating button.
-2. Talk as usual. Press **Win + Alt + M** again (or the red button) when the meeting ends. If the meeting app closes its call, Kotha stops by itself.
-3. A card says **মিটিং নোট তৈরি হয়েছে ✓**. Click **খুলুন** to see the notes and the full transcript. Copy them, or save them as Markdown.
-
-All meetings are listed under the tray icon > **মিটিং নোটগুলো**. Settings > **মিটিং নোট** controls detection, auto-stop, the shortcut, the notes language and the floating button.
-
-> **Be fair to others:** tell everyone in the meeting before you record. Notes and audio stay on your computer; the audio is sent for transcription only with your own Gemini (or Groq/OpenAI) key. Raw audio is deleted after the notes are made unless you turn on *keep audio*.
-
-Free Gemini keys have a per-minute limit. If a part cannot be written right away, Kotha keeps its audio and retries; you can also press **বাকি অংশ আবার প্রসেস করো** later. Meeting notes on Mac will come in a later version.
-
-## বাংলায় সংক্ষেপে
-
-1. [Releases](../../releases/latest) থেকে `Kotha-Windows-Setup.exe` নামিয়ে ইনস্টল করুন।
-2. https://aistudio.google.com/apikey এ Google অ্যাকাউন্ট দিয়ে ঢুকুন।
-3. **Create API key** চাপুন, তারপর **Create API key in new project** বেছে নিন। কোনো billing বা কার্ড যোগ করবেন না, তাহলেই ফ্রি থাকবে।
-4. key কপি করে Kotha এর Settings এ **Gemini API key** ঘরে বসান, **Key চেক করো** চাপুন, তারপর **Save**।
-5. যেকোনো টেক্সট বক্সে ক্লিক করুন, **Ctrl + Win** (Mac এ **Right Option**) চেপে ধরে কথা বলুন, ছেড়ে দিলেই লেখা বসে যাবে।
-6. মিটিং নোট (Windows): মিটিং শুরু হলে Kotha জিজ্ঞেস করবে "নোট নেবো?"। অথবা **Win + Alt + M** চাপুন। মিটিং শেষে আবার চাপলে সারাংশ, মূল পয়েন্ট, সিদ্ধান্ত আর করণীয়সহ নোট তৈরি হবে।
-
-## Engines
-
-| Engine | Key | Notes |
-|---|---|---|
-| Gemini Live (default) | Free Gemini key | Real-time text while you speak |
-| Gemini Transcribe | Free Gemini key | Text appears after you finish, high accuracy for Bangla and mixed speech |
-| Gemini Flash | Free Gemini key | Lets you choose how mixed speech is written |
-| Groq Whisper | Free Groq key | Very fast, weaker on Bangla |
-| OpenAI | Paid key | |
-| Offline Whisper | None | Offline edition only |
-
-Free-tier audio may be used by Google to improve its products. Use the Offline edition for fully private dictation.
+- **`kotha.py`**: the app: recording, engines, meeting pipeline, windows.
+- **`plat_win.py`, `plat_mac.py`**: everything OS-specific: global shortcut hook, paste keystroke, text-box detection, call detection, system-audio capture (Windows: WASAPI loopback; Mac: ScreenCaptureKit), tray helpers.
+- **`ui_theme.py`**: the design system (dark theme, Windows 11 Mica glass, Hind Siliguri font, components).
+- Meeting audio is recorded as two tracks (you / others), cut at quiet moments into 1-minute pieces, transcribed in parallel with speaker labels, then summarised by a stronger model. If a model is rate-limited Kotha falls back to the next one and retries.
+- A self-test (`Kotha --selftest --ui`) opens every window and checks audio and detection; it runs on real Windows and macOS machines in CI.
 
 ## Build from source
 
-**Windows** needs Python 3.12 and [NSIS](https://nsis.sourceforge.io).
-
+**Windows:** Python 3.12 and [NSIS](https://nsis.sourceforge.io).
 ```bat
-build.bat            :: lite installer  -> output\Kotha-Windows-Setup.exe
-build.bat offline    :: offline installer -> output\Kotha-Windows-Offline-Setup.exe
+build.bat            :: output\Kotha-Windows-Setup.exe
+build.bat offline    :: output\Kotha-Windows-Offline-Setup.exe
 ```
-
-**macOS** needs a Mac with Python 3.12 (python.org build, it includes Tk):
-
+**macOS:** a Mac with Python 3.12 (python.org build, it includes Tk).
 ```bash
 chmod +x build_mac.sh
-./build_mac.sh        # output/Kotha-Mac-AppleSilicon.dmg (Kotha-Mac-Intel.dmg on Intel Macs)
+./build_mac.sh       # output/Kotha-Mac-AppleSilicon.dmg (or Kotha-Mac-Intel.dmg)
 ```
+No Mac? Push a tag like `v2.4.0`: the **Release** workflow builds all four files and attaches them to the GitHub release. The **Mac self-test** workflow (push a branch named `mactest/…`) runs the app on real macOS machines.
 
-No Mac? The GitHub Actions workflow `.github/workflows/build-mac.yml` builds the `.dmg` for you (Actions tab > Build Kotha for macOS > Run workflow).
+Run from source: `pip install -r requirements.txt` then `python kotha.py`.
 
-Run from source on either system:
+## Support Kotha
 
-```bash
-pip install -r requirements.txt
-python kotha.py
-```
+Kotha is free, open source, and will stay that way. Building it, keeping it working and adding features like Mac and meeting notes takes time and money. If it helps you and you would like to say thanks, you can send the price of a coffee. If not, no problem at all, Kotha is for you either way. ❤
 
-The OS-specific code is isolated in `plat_win.py` and `plat_mac.py`; `kotha.py` is shared.
-GitHub Actions workflows: `build.yml` (Windows installers) and `build-mac.yml` (Mac `.dmg`). Push a tag like `v2.2.2` or run them manually.
+<div align="center">
 
-Settings, history and logs live in `%APPDATA%\Kotha` on Windows and `~/Library/Application Support/Kotha` on Mac.
+**bKash · Rocket · Nagad (Personal, Send Money)**
+
+### `+880 1650-043801`
+
+</div>
+
+Other ways to help, all free: **star this repo ⭐**, tell a friend or colleague, and report bugs or ideas in [Issues](../../issues).
 
 ## Contributing
 
-Issues and pull requests are welcome. If you find a bug, open an issue with the steps to reproduce and the log from `%APPDATA%\Kotha\kotha.log`. Never share your API key.
-
-## Share Kotha
-
-Ready-made banners for Facebook, Instagram, X and LinkedIn are in [`docs/banners`](docs/banners). Feel free to use them when you share the project.
-
-<div align="center">
-<img src="docs/banners/kotha-free-bangla-voice-typing-linkedin-1200x627.png" alt="Kotha voice typing app banner: speak Bangla or English and text appears in any Windows app" width="620">
-</div>
+Issues and pull requests are welcome. For a bug, include the steps, your Windows/macOS version, and the log lines from `kotha.log` (never your API key).
 
 ## Credits
 
-<img src="docs/kotha-about-developer-manik-hossain.png" alt="Kotha about page: developed by Manik Hossain, part of NextGen Agency" width="420">
-
 Developed by **[Manik Hossain](https://www.manikhossain.in/)**, part of **[NextGen Agency](https://www.nextgenagency.co/)**.
+Font: [Hind Siliguri](https://fonts.google.com/specimen/Hind+Siliguri) (SIL Open Font License).
+
+<div align="center">
+<img src="docs/screens/settings-about.png" alt="Kotha about page: developed by Manik Hossain, part of NextGen Agency" width="620">
+</div>
 
 ## License
 
