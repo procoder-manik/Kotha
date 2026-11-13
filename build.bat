@@ -3,7 +3,7 @@ chcp 65001 >nul
 cd /d "%~dp0"
 REM Usage: build.bat          -> Kotha-Windows-Setup.exe (lite, ~13 MB)
 REM        build.bat offline  -> Kotha-Windows-Offline-Setup.exe (with offline Whisper)
-set COMMON=--noconfirm --clean --windowed --onedir --name Kotha --icon assets\kotha.ico --add-data "assets;assets" --hidden-import pystray._win32 --collect-all uiautomation --exclude-module unittest --exclude-module pydoc --exclude-module lib2to3 --exclude-module setuptools --exclude-module plat_mac --collect-data soundcard --exclude-module plat_mac
+set COMMON=--noconfirm --clean --windowed --onedir --name Kotha --icon assets\kotha.ico --add-data "assets;assets" --hidden-import pystray._win32 --collect-all uiautomation --exclude-module unittest --exclude-module pydoc --exclude-module lib2to3 --exclude-module setuptools --exclude-module plat_mac --collect-data soundcard --collect-all customtkinter --hidden-import ui_theme --exclude-module plat_mac
 
 if /i "%1"=="offline" (
   python -m pip install -r requirements-offline.txt pyinstaller || goto :fail
