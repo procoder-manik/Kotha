@@ -81,6 +81,9 @@ AGENCY_NAME = "NextGen Agency"
 AGENCY_URL = "https://www.nextgenagency.co/"
 WHATSAPP_TEXT = "+880 1720-520782"
 WHATSAPP_URL = "https://wa.me/8801720520782"
+SUPPORT_NUMBER = "01650043801"                  # bKash / Rocket / Nagad (personal)
+SUPPORT_NUMBER_TEXT = "+880 1650-043801"
+SUPPORT_WALLETS = (("bKash", "#e2136e"), ("Rocket", "#8c3494"), ("Nagad", "#f6921e"))
 
 LOCAL_AVAILABLE = importlib.util.find_spec("faster_whisper") is not None
 PASTE_KEYS = "Cmd+V" if plat.IS_MAC else "Ctrl+V"
@@ -1041,6 +1044,14 @@ class Controller(threading.Thread):
         elif kind == "done":
             if self.job and ev[1] == self.job.id:
                 self.on_done(ev[2], ev[3])
+        elif kind == "handsfree":
+            if self.state == IDLE:
+                if self.start_recording():
+                    self.state = HANDSFREE
+                    self.ignore_next_up = False
+                    self.ui("show", "hands")
+            elif self.state in (HANDSFREE, PTT, TAP_WAIT):
+                self.finish()
         elif kind == "paste_last":
             if self.app.history.items and self.state == IDLE:
                 self.paste(self.app.history.items[0]["text"], force=True)
@@ -1271,11 +1282,12 @@ class MeetingRecorder:
         self.lock = threading.Lock()
 
     def start(self):
-        import soundcard  # noqa: F401  (fail early, in the caller's thread, if it is missing)
+        if plat.IS_WIN:
+            import soundcard  # noqa: F401  (fail early, in the caller's thread, if it is missing)
         self.t0 = time.monotonic()
         self.running = True
         for kind in ("mic", "sys"):
-            t = threading.Thread(target=self._loop, args=(kind,), daemon=True)
+            t = threading.Thread(target=self._loop_mac if plat.IS_MAC else self._loop, args=(kind,), daemon=True)
             t.start()
             self.threads.append(t)
 
@@ -1321,6 +1333,53 @@ class MeetingRecorder:
                     log(f"meeting {kind} capture error: {e!r}")
                 self.errors[kind] = str(e)
                 time.sleep(2)
+        self.alive[kind] = False
+        f.close()
+
+    def _loop_mac(self, kind):
+        """macOS: microphone through PortAudio, system audio through ScreenCaptureKit."""
+        import numpy as np
+        f = open(self.paths[kind], "ab")
+        chunks = queue.Queue()
+        while self.running:
+            src = None
+            try:
+                if kind == "mic":
+                    src = sd.RawInputStream(samplerate=SR, channels=1, dtype="int16", blocksize=SR // 10,
+                                            device=Recorder._device_index(self.mic_name),
+                                            callback=lambda indata, frames, t, status: chunks.put(bytes(indata)))
+                    src.start()
+                else:
+                    src = plat.SystemAudioCapture(chunks.put)
+                    src.start()
+                self.alive[kind] = True
+                self.errors.pop(kind, None)
+                while self.running:
+                    try:
+                        pcm = chunks.get(timeout=0.5)
+                    except queue.Empty:
+                        continue
+                    a = np.frombuffer(pcm, dtype="<i2")
+                    if len(a):
+                        self.level[kind] = min(1.0, float(np.sqrt(np.mean((a / 32768.0) ** 2))) * 9)
+                        self._append(kind, f, pcm, len(a))
+            except Exception as e:
+                self.alive[kind] = False
+                if self.errors.get(kind) != str(e):
+                    log(f"meeting {kind} capture error: {e!r}")
+                self.errors[kind] = str(e)
+                for _ in range(10):
+                    if not self.running:
+                        break
+                    time.sleep(0.5)
+            finally:
+                if src is not None:
+                    try:
+                        src.stop()
+                        if kind == "mic":
+                            src.close()
+                    except Exception:
+                        pass
         self.alive[kind] = False
         f.close()
 
@@ -1959,7 +2018,9 @@ class MeetingDetector(threading.Thread):
             if not cfg.get("notes_enabled", True):
                 continue
             try:
-                found = dict(plat.active_meetings(self.self_exe))
+                app = self.app
+                busy = bool(app.meeting or app.recorder.stream is not None or app.controller.state != IDLE)
+                found = dict(plat.active_meetings(self.self_exe, busy))
             except Exception as e:
                 log(f"meeting detection: {e!r}")
                 continue
@@ -2130,30 +2191,30 @@ def _load_logo(size):
 
 
 class FloatBar:
-    """Wispr-style floating button on the left edge of the screen. Hover shows the shortcuts and a
-    button to start/stop meeting notes. Drag it up or down to move it."""
-    KEY = "#010203"
+    """Wispr-style edge handle. Collapsed it is just a thin line on the left edge of the screen. Hover and it opens
+    into round buttons: microphone (hands-free dictation), meeting notes, all notes, settings. Drag it up/down."""
+    KEY = plat.OVERLAY_KEY
 
     def __init__(self, app):
-        self.app, self.root, s = app, app.root, app.scale
-        self.s = s
-        self.small = int(46 * s)
-        self.big_w, self.big_h = int(320 * s), int(196 * s)
+        self.app, self.root = app, app.root
+        s = self.s = app.scale
+        self.cw, self.ch = int(20 * s), int(64 * s)                  # collapsed window
+        self.btn, self.gap, self.pad = int(40 * s), int(8 * s), int(7 * s)
+        self.rail_w = self.btn + 2 * self.pad
+        self.nbtn = 4
+        self.eh = self.nbtn * self.btn + (self.nbtn - 1) * self.gap + 2 * self.pad
+        self.ew = int(340 * s)                                       # rail + room for the label
         self.win = tk.Toplevel(self.root)
-        self.win.overrideredirect(True)
-        self.win.attributes("-topmost", True)
-        self.win.configure(bg=self.KEY)
-        self.win.attributes("-transparentcolor", self.KEY)
-        self.cv = tk.Canvas(self.win, bg=self.KEY, highlightthickness=0, width=self.small, height=self.small)
+        plat.init_float(self.win, self.KEY)
+        self.cv = tk.Canvas(self.win, bg=self.KEY, highlightthickness=0, width=self.cw, height=self.ch)
         self.cv.pack(fill="both", expand=True)
-        self.logo_small = _load_logo(int(28 * s))
-        self.logo_big = _load_logo(int(26 * s))
         self.expanded = False
+        self.hover = None
         self.enter_t = None
         self.last_inside = 0.0
-        self.drag_from = None
-        self.dragged = False
+        self.drag_from, self.dragged = None, False
         self.tick_n = 0
+        self.rects = []
         self.cv.bind("<ButtonPress-1>", self._press)
         self.cv.bind("<B1-Motion>", self._motion)
         self.cv.bind("<ButtonRelease-1>", self._release)
@@ -2163,27 +2224,32 @@ class FloatBar:
         self._tick()
 
     # ---- geometry ----
-    def _pos(self):
+    def _y_center(self):
         l, t, r, b = work_area(self.root)
-        frac = min(0.9, max(0.05, float(self.app.cfg.get("float_y", 0.42))))
-        y = int(t + frac * (b - t) - self.small / 2)
-        return l + int(4 * self.s), y, t, b
+        frac = min(0.9, max(0.08, float(self.app.cfg.get("float_y", 0.42))))
+        return int(t + frac * (b - t)), t, b
 
     def place(self):
-        x, y, t, b = self._pos()
+        yc, t, b = self._y_center()
+        x = int(2 * self.s)
+        l = work_area(self.root)[0]
         if self.expanded:
-            y = max(t + 4, min(y, b - self.big_h - 4))
-            self.win.geometry(f"{self.big_w}x{self.big_h}+{x}+{y}")
-            self.cv.config(width=self.big_w, height=self.big_h)
+            y = max(t + 4, min(yc - self.eh // 2, b - self.eh - 4))
+            self.win.geometry(f"{self.ew}x{self.eh}+{l + x}+{y}")
+            self.cv.config(width=self.ew, height=self.eh)
         else:
-            self.win.geometry(f"{self.small}x{self.small}+{x}+{y}")
-            self.cv.config(width=self.small, height=self.small)
+            self.win.geometry(f"{self.cw}x{self.ch}+{l + x}+{yc - self.ch // 2}")
+            self.cv.config(width=self.cw, height=self.ch)
+        try:
+            self.win.attributes("-alpha", 0.98 if self.expanded else 0.82)
+        except Exception:
+            pass
         self.win.attributes("-topmost", True)
 
     def anchor(self):
-        """Screen point next to the button, for pop-up cards."""
-        x, y, t, b = self._pos()
-        return x + self.small + int(10 * self.s), y
+        """Screen point right next to the handle, for pop-up cards."""
+        yc, t, b = self._y_center()
+        return work_area(self.root)[0] + self.rail_w + int(14 * self.s), yc - self.eh // 2
 
     def destroy(self):
         try:
@@ -2191,156 +2257,240 @@ class FloatBar:
         except Exception:
             pass
 
-    # ---- mouse ----
-    def _press(self, e):
-        self.drag_from = (e.y_root, self.win.winfo_y())
-        self.dragged = False
-
-    def _motion(self, e):
-        if self.expanded or not self.drag_from:
-            return
-        dy = e.y_root - self.drag_from[0]
-        if abs(dy) > 4:
-            self.dragged = True
-        if self.dragged:
-            l, t, r, b = work_area(self.root)
-            y = self.drag_from[1] + dy
-            self.app.cfg["float_y"] = min(0.9, max(0.05, (y + self.small / 2 - t) / max(1, b - t)))
-            self.place()
-
-    def _release(self, e):
-        if self.dragged:
-            self.dragged = False
-            self.drag_from = None
-            try:
-                self.app.cfg.save()
-            except Exception:
-                pass
-            return
-        self.drag_from = None
-        if not self.expanded:
-            self.expanded = True
-            self.last_inside = time.monotonic()
-            self.place()
-            self.draw()
-
-    def _hit(self, tag):
-        def go(_e=None):
-            if tag == "btn":
-                self.app.toggle_meeting()
-            elif tag == "notes":
-                self.app.open_notes()
-            elif tag == "settings":
-                self.app.open_settings()
-            self.draw()
-        return go
-
-    # ---- drawing ----
+    # ---- state ----
     def _state(self):
         m = self.app.meeting
         if m and m.recording:
             return "rec"
         if m:
             return "busy"
+        if self.app.detector and self.app.detector.current:
+            return "detected"
         return "idle"
+
+    def _dictating(self):
+        return self.app.controller.state in (PTT, HANDSFREE, TAP_WAIT)
+
+    # ---- mouse ----
+    def _press(self, e):
+        self.drag_from = (e.y_root, self.win.winfo_y())
+        self.dragged = False
+
+    def _motion(self, e):
+        if not self.drag_from:
+            return
+        dy = e.y_root - self.drag_from[0]
+        if abs(dy) > 5:
+            self.dragged = True
+        if self.dragged:
+            l, t, r, b = work_area(self.root)
+            h = self.eh if self.expanded else self.ch
+            yc = self.drag_from[1] + dy + h / 2
+            self.app.cfg["float_y"] = min(0.9, max(0.08, (yc - t) / max(1, b - t)))
+            self.place()
+
+    def _release(self, e):
+        was_drag = self.dragged
+        self.dragged = False
+        self.drag_from = None
+        if was_drag:
+            try:
+                self.app.cfg.save()
+            except Exception:
+                pass
+            return
+        if not self.expanded:
+            self.expanded = True
+            self.last_inside = time.monotonic()
+            self.place()
+            self.draw()
+
+    def _act(self, key):
+        def go(_e=None):
+            if self.dragged:
+                return
+            if key == "mic":
+                self.app.controller.q.put(("handsfree",))
+            elif key == "rec":
+                self.app.toggle_meeting()
+            elif key == "notes":
+                self.app.open_notes()
+            elif key == "settings":
+                self.app.open_settings()
+            self.root.after(150, self.draw)
+        return go
+
+    def _set_hover(self, key):
+        def go(_e=None):
+            self.hover = key
+            self.draw()
+        return go
+
+    # ---- drawing ----
+    def _icon(self, kind, cx, cy, col):
+        cv, k = self.cv, self.s
+        if kind == "mic":
+            _round_rect(cv, cx - 3.6 * k, cy - 9.5 * k, cx + 3.6 * k, cy + 2.5 * k, 3.6 * k, fill=col, outline="")
+            cv.create_arc(cx - 7.2 * k, cy - 6.5 * k, cx + 7.2 * k, cy + 7.5 * k, start=200, extent=140, style="arc",
+                          outline=col, width=max(1.5, 1.6 * k))
+            cv.create_line(cx, cy + 7.5 * k, cx, cy + 10.5 * k, fill=col, width=max(1.5, 1.6 * k), capstyle="round")
+            cv.create_line(cx - 4 * k, cy + 10.5 * k, cx + 4 * k, cy + 10.5 * k, fill=col, width=max(1.5, 1.6 * k),
+                           capstyle="round")
+        elif kind == "rec":
+            cv.create_oval(cx - 6.5 * k, cy - 6.5 * k, cx + 6.5 * k, cy + 6.5 * k, fill=col, outline="")
+        elif kind == "stop":
+            _round_rect(cv, cx - 6 * k, cy - 6 * k, cx + 6 * k, cy + 6 * k, 2 * k, fill=col, outline="")
+        elif kind == "notes":
+            w = max(1.6, 1.8 * k)
+            for dy, half in ((-5.5, 8), (0, 8), (5.5, 5)):
+                cv.create_line(cx - 8 * k, cy + dy * k, cx - 8 * k + 2 * half * k, cy + dy * k, fill=col, width=w,
+                               capstyle="round")
+        elif kind == "gear":
+            cv.create_text(cx, cy - 1, text="⚙", fill=col, font=(plat.SYMBOL_FONT, int(14 * (k if k < 1.6 else 1.6))))
+
+    def _label(self, y_center, title, sub=None, keys=None, tone="#ffffff"):
+        cv, s = self.cv, self.s
+        x1 = self.rail_w + int(10 * s)
+        pad = int(12 * s)
+        t = cv.create_text(x1 + pad, y_center, text=title, anchor="w", fill=tone, font=(FONT, 10, "bold"))
+        bb = list(cv.bbox(t))
+        extra = []
+        if sub:
+            cv.coords(t, x1 + pad, y_center - int(9 * s))
+            u = cv.create_text(x1 + pad, y_center + int(9 * s), text=sub, anchor="w", fill="#9aa3b2", font=(FONT, 9))
+            bb = [min(bb[0], cv.bbox(u)[0]), cv.bbox(t)[1], max(cv.bbox(t)[2], cv.bbox(u)[2]), cv.bbox(u)[3]]
+            extra.append(u)
+        right = bb[2]
+        if keys:
+            k = cv.create_text(right + int(10 * s), cv.bbox(t)[1] + (cv.bbox(t)[3] - cv.bbox(t)[1]) // 2,
+                               text=keys, anchor="w", fill="#e8ecf4", font=(FONT, 9, "bold"))
+            kb = cv.bbox(k)
+            _round_rect(cv, kb[0] - int(7 * s), kb[1] - int(3 * s), kb[2] + int(7 * s), kb[3] + int(3 * s), int(8 * s),
+                        fill="#2b3040", outline="")
+            cv.tag_raise(k)
+            right = kb[2] + int(7 * s)
+        top, bot = bb[1] - int(9 * s), bb[3] + int(9 * s)
+        bg = _round_rect(cv, x1, top, right + pad, bot, int(14 * s), fill="#171a21", outline="#343a49")
+        cv.tag_lower(bg)
+        for item in cv.find_all():
+            pass
+        self.rects.append((x1, top, right + pad, bot))
 
     def draw(self):
         cv, s = self.cv, self.s
         cv.delete("all")
+        self.rects = []
         state = self._state()
+        pulse = (self.tick_n // 4) % 2 == 0
         if not self.expanded:
-            n = self.small
-            ring = "#F42A41" if state == "rec" else ("#8b5cf6" if state == "busy" else "#3a3f4d")
-            width = int(3 * s) if state != "idle" else 1
-            if state == "rec" and (self.tick_n // 4) % 2:
-                ring = "#a01c2b"
-            cv.create_oval(2, 2, n - 2, n - 2, fill="#14161c", outline=ring, width=width)
-            if self.logo_small:
-                cv.create_image(n // 2, n // 2, image=self.logo_small)
-            if state == "rec":
-                r = int(5 * s)
-                cv.create_oval(n - 2 * r - 2, 2, n - 2, 2 * r + 2, fill="#F42A41", outline="#14181c", width=2)
+            cx, cy = self.cw // 2, self.ch // 2
+            hw, hh = int(3.5 * s), int(22 * s)
+            col = {"rec": "#ef4444" if pulse else "#b91c1c", "busy": "#8b5cf6",
+                   "detected": "#f59e0b" if pulse else "#b8791a"}.get(state, "#a7adb8")
+            if self._dictating():
+                col = "#22c55e"
+            _round_rect(cv, cx - hw, cy - hh, cx + hw, cy + hh, hw, fill=col, outline="")
+            self.rects = [(0, 0, self.cw, self.ch)]
             return
-        w, h = self.big_w, self.big_h
-        _round_rect(cv, 1, 1, w - 1, h - 1, int(18 * s), fill="#14161c", outline="#2f3442")
-        x0 = int(16 * s)
-        if self.logo_big:
-            cv.create_image(x0 + int(13 * s), int(24 * s), image=self.logo_big)
-        cv.create_text(x0 + int(32 * s), int(24 * s), text=f"Kotha  {APP_BN}", anchor="w", fill="#ffffff",
-                       font=(FONT, 11, "bold"))
-        cv.create_text(w - x0, int(24 * s), text=f"v{VERSION}", anchor="e", fill="#6f7b86", font=(FONT, 8))
-
-        def row(y, label, keys):
-            cv.create_text(x0, y, text=label, anchor="w", fill="#d6dde3", font=(FONT, 10))
-            t = cv.create_text(w - x0 - int(8 * s), y, text=keys, anchor="e", fill="#ffffff", font=(FONT, 9, "bold"))
-            bx1, by1, bx2, by2 = cv.bbox(t)
-            _round_rect(cv, bx1 - int(8 * s), by1 - int(3 * s), bx2 + int(8 * s), by2 + int(3 * s), int(8 * s),
-                        fill="#26303a", outline="")
-            cv.tag_raise(t)
-
-        row(int(62 * s), "কথা বলে লিখুন (চেপে ধরে)", hotkey_label(self.app.cfg["hotkey"]))
-        row(int(94 * s), "মিটিং নোট শুরু / শেষ", hotkey_label(self.app.cfg.get("note_hotkey", DEFAULT_NOTE_HOTKEY)))
-        by1, by2 = int(116 * s), int(152 * s)
-        if state == "rec":
-            fill, text = "#d93025", f"■  নোট শেষ করো   {_fmt_clock(self.app.meeting.elapsed())}"
-        elif state == "busy":
-            fill, text = "#3a4450", "নোট তৈরি হচ্ছে…  (দেখুন)"
-        else:
-            fill, text = "#8b5cf6", "●  মিটিং নোট নেওয়া শুরু করো"
-        _round_rect(cv, x0, by1, w - x0, by2, int(12 * s), fill=fill, outline="", tags="btn")
-        cv.create_text(w // 2, (by1 + by2) // 2, text=text, fill="#ffffff", font=(FONT, 10, "bold"), tags="btn")
-        cv.create_text(x0, int(176 * s), text="সব নোট দেখুন  →", anchor="w", fill="#c4b5fd", font=(FONT, 9),
-                       tags="notes")
-        cv.create_text(w - x0, int(176 * s), text="⚙  Settings", anchor="e", fill="#c4b5fd", font=(FONT, 9),
-                       tags="settings")
-        for tag in ("btn", "notes", "settings"):
-            fn = self._hit(tag if not (tag == "btn" and state == "busy") else "notes")
-            cv.tag_bind(tag, "<ButtonRelease-1>", fn)
-            cv.tag_bind(tag, "<Enter>", lambda e: cv.config(cursor="hand2"))
-            cv.tag_bind(tag, "<Leave>", lambda e: cv.config(cursor=""))
+        pad, btn, gap = self.pad, self.btn, self.gap
+        _round_rect(cv, 1, 1, self.rail_w, self.eh - 1, self.rail_w // 2, fill="#14161c", outline="#343a49")
+        keys_dict = hotkey_label(self.app.cfg["hotkey"])
+        note_keys = hotkey_label(self.app.cfg.get("note_hotkey", DEFAULT_NOTE_HOTKEY))
+        items = [("mic", "mic"), ("rec", "stop" if state == "rec" else "rec"), ("notes", "notes"), ("settings", "gear")]
+        self.rects.append((0, 0, self.rail_w + 6, self.eh))
+        for i, (key, icon) in enumerate(items):
+            cx = pad + btn // 2 + 1
+            cy = pad + i * (btn + gap) + btn // 2
+            hov = self.hover == key
+            fill = "#262a35"
+            ic = "#e8ecf4"
+            ring = ""
+            if key == "mic":
+                if self._dictating():
+                    fill, ic = "#16a34a", "#ffffff"
+            if key == "rec":
+                if state == "rec":
+                    fill, ic = ("#ef4444" if pulse else "#dc2626"), "#ffffff"
+                elif state == "busy":
+                    fill, ic = "#3a3560", "#c4b5fd"
+                elif state == "detected":
+                    ring = "#f59e0b" if pulse else "#7c5412"
+                    ic = "#f87171"
+                else:
+                    ic = "#f87171"
+            if hov and fill == "#262a35":
+                fill = "#343a49"
+            r = btn // 2
+            cv.create_oval(cx - r, cy - r, cx + r, cy + r, fill=fill, outline=ring, width=int(2 * s) if ring else 0,
+                           tags=("b_" + key,))
+            self._icon(icon, cx, cy, ic)
+            cv.create_oval(cx - r, cy - r, cx + r, cy + r, fill="", outline="", tags=("b_" + key,))
+            cv.tag_bind("b_" + key, "<ButtonRelease-1>", self._act(key))
+            cv.tag_bind("b_" + key, "<Enter>", self._set_hover(key))
+            cv.tag_bind("b_" + key, "<Leave>", self._set_hover(None))
+            if hov:
+                cv.config(cursor="hand2")
+                if key == "mic":
+                    self._label(cy, "কথা বলে লিখুন", "চেপে ধরুন · ক্লিকে হ্যান্ডস-ফ্রি", keys_dict)
+                elif key == "rec":
+                    if state == "rec":
+                        self._label(cy, f"নোট শেষ করুন   {_fmt_clock(self.app.meeting.elapsed())}", "ক্লিক করলে সারাংশ তৈরি হবে",
+                                    tone="#fecaca")
+                    elif state == "busy":
+                        self._label(cy, "নোট তৈরি হচ্ছে…", "ক্লিক করে দেখুন")
+                    elif state == "detected":
+                        names = ", ".join(self.app.detector.current)
+                        self._label(cy, f"{names} এ মিটিং চলছে", "ক্লিক করে নোট নেওয়া শুরু করুন", note_keys, "#fde68a")
+                    else:
+                        self._label(cy, "মিটিং নোট শুরু করুন", "এখন কোনো মিটিং চলছে না", note_keys)
+                elif key == "notes":
+                    self._label(cy, "সব মিটিং নোট", "নোট, সারাংশ, ট্রান্সক্রিপ্ট")
+                else:
+                    self._label(cy, "Settings", f"Kotha {VERSION}")
+        if self.hover is None:
+            cv.config(cursor="")
 
     def _tick(self):
         try:
             self.tick_n += 1
             px, py = self.root.winfo_pointerxy()
             x, y = self.win.winfo_x(), self.win.winfo_y()
-            w, h = self.win.winfo_width(), self.win.winfo_height()
-            inside = x <= px < x + w and y <= py < y + h
+            inside = any(x + a <= px < x + c and y + b <= py < y + d for a, b, c, d in self.rects) or \
+                (self.drag_from is not None)
             now = time.monotonic()
             if inside:
                 self.last_inside = now
                 if self.enter_t is None:
                     self.enter_t = now
-                if not self.expanded and not self.drag_from and now - self.enter_t >= 0.15:
+                if not self.expanded and not self.drag_from and now - self.enter_t >= 0.12:
                     self.expanded = True
                     self.place()
                     self.draw()
             else:
                 self.enter_t = None
-                if self.expanded and now - self.last_inside > 0.5:
+                if self.expanded and now - self.last_inside > 0.45:
                     self.expanded = False
+                    self.hover = None
                     self.place()
                     self.draw()
-            if self._state() != "idle" and self.tick_n % 3 == 0:
-                self.draw()
+            if self._state() != "idle" or self._dictating() or (self.expanded and self.hover == "rec"):
+                if self.tick_n % 3 == 0:
+                    self.draw()
             if self.tick_n % 40 == 0:
                 self.win.attributes("-topmost", True)
         except Exception as e:
             log(f"float bar: {e!r}")
-        self.root.after(150, self._tick)
+        self.root.after(120, self._tick)
 
 
 class Card:
     """Small clickable pop-up that never steals focus (meeting suggestion, 'notes ready')."""
-    KEY = "#010203"
+    KEY = plat.OVERLAY_KEY
 
     def __init__(self, app, title, body, buttons, timeout=30):
         self.app, s = app, app.scale
         self.win = tk.Toplevel(app.root)
-        self.win.overrideredirect(True)
-        self.win.attributes("-topmost", True)
-        self.win.configure(bg=self.KEY)
-        self.win.attributes("-transparentcolor", self.KEY)
+        plat.init_float(self.win, self.KEY)
         w = int(360 * s)
         cv = tk.Canvas(self.win, bg=self.KEY, highlightthickness=0, width=w, height=int(200 * s))
         cv.pack()
@@ -2610,6 +2760,21 @@ class App:
             self.card.close()
         self.overlay.show("note", "মিটিং নোট নেওয়া শুরু হয়েছে")
         self.refresh_meeting_ui()
+        self.root.after(6000, self._check_capture)
+
+    def _check_capture(self):
+        m = self.meeting
+        if not m or not m.recording:
+            return
+        errs = m.recorder.errors
+        if errs.get("sys") and plat.IS_MAC:
+            self.overlay.show("error", "অন্যদের কণ্ঠ শোনা যাচ্ছে না। System Settings > Privacy > Screen Recording এ "
+                                       "Kotha চালু করে Kotha আবার খুলুন")
+            plat.open_privacy_pane("screen")
+        elif errs.get("sys"):
+            log(f"meeting: no system audio: {errs['sys']}")
+        if errs.get("mic"):
+            self.overlay.show("error", "মাইক্রোফোন চালু করা যাচ্ছে না, মাইকের অনুমতি দেখুন")
 
     def stop_meeting(self):
         if self.meeting and self.meeting.recording:
@@ -2981,10 +3146,7 @@ class App:
     def _notes_folder(self):
         mid = self._notes_sel()
         if mid:
-            try:
-                os.startfile(MeetingStore.folder(mid))
-            except Exception:
-                webbrowser.open(MeetingStore.folder(mid))
+            plat.open_folder(MeetingStore.folder(mid))
 
     def _notes_resummarize(self):
         mid = self._notes_sel()
@@ -3292,19 +3454,20 @@ class App:
                      ("general", "⚙", "সাধারণ")]
         if MEETING_SUPPORTED:
             pages_def.append(("meeting", "📝", "মিটিং নোট"))
-        pages_def += [("advanced", "🧩", "অ্যাডভান্সড"), ("about", "✦", "পরিচিতি")]
+        pages_def += [("advanced", "🧩", "অ্যাডভান্সড"), ("support", "☕", "সাপোর্ট"), ("about", "✦", "পরিচিতি")]
         titles = {"start": ("শুরু করুন", "কথা বলুন, লেখা হয়ে যাবে। আগে একটা ফ্রি key দিন।"),
                   "lang": ("ভাষা ও লেখা", "কোন ভাষায় বলবেন, আর লেখা কেমন হবে।"),
                   "keys": ("শর্টকাট", "চেপে ধরে কথা বলুন, ছাড়লে লেখা বসে যাবে।"),
                   "general": ("সাধারণ", "মাইক্রোফোন, পেস্ট আর চালু হওয়ার নিয়ম।"),
                   "meeting": ("মিটিং নোট", "পুরো মিটিং শুনে নোট, সারাংশ আর করণীয় বানিয়ে দেয়।"),
                   "advanced": ("অ্যাডভান্সড", "মডেল আর অন্য engine এর key।"),
+                  "support": ("পাশে থাকুন", "Kotha ফ্রি, ওপেন সোর্স, আর সবসময় ফ্রি থাকবে।"),
                   "about": ("পরিচিতি", "")}
         nav_btns = {}
         nav = ctk.CTkFrame(side, fg_color="transparent")
         nav.pack(fill="x")
         for key, icon, text in pages_def:
-            b = ctk.CTkButton(nav, text=f"  {icon}   {text}", anchor="w", height=40, corner_radius=11,
+            b = ctk.CTkButton(nav, text=f"  {icon}   {text}", anchor="w", height=42, corner_radius=14,
                               fg_color="transparent", hover_color=C["surface"], text_color=C["muted"],
                               font=ui.font(14, "medium"), command=lambda k=key: go(k))
             b.pack(fill="x", pady=2)
@@ -3340,8 +3503,8 @@ class App:
         def go(key):
             for k, b in nav_btns.items():
                 sel = k == key
-                b.configure(fg_color=C["surface2"] if sel else "transparent",
-                            text_color=C["text"] if sel else C["muted"])
+                b.configure(fg_color=C["accent_soft"] if sel else "transparent",
+                            text_color=C["accent_text"] if sel else C["muted"])
             for k, pg in pages.items():
                 if k == key:
                     pg.grid(row=1, column=0, sticky="nsew")
@@ -3368,12 +3531,12 @@ class App:
                 ui.label(kc, "+", 14, "semibold", color=C["accent_text"]).pack(side="left", padx=6)
             ui.keycap(kc, part).pack(side="left")
 
-        s1 = ui.section(p, "ENGINE")
+        s1 = ui.section(p, "Engine")
         ui.setting_row(s1, "Engine", "কোন সার্ভিস দিয়ে লেখা হবে। Gemini Live সবচেয়ে দ্রুত, লেখা সাথে সাথে আসে।",
                        lambda f: ui.select(f, v_prov, prov_labels, width=360), first=True)
         ctk.CTkFrame(s1, height=10, width=1, fg_color="transparent").pack()
 
-        s2 = ui.section(p, "GEMINI API KEY (ফ্রি)")
+        s2 = ui.section(p, "Gemini API key (ফ্রি)")
         kr = ctk.CTkFrame(s2, fg_color="transparent")
         kr.pack(fill="x", padx=18, pady=(16, 6))
         ui.entry(kr, v_gk, show="•", width=420, placeholder="AIza… key এখানে পেস্ট করুন").pack(side="left", fill="x", expand=True)
@@ -3398,7 +3561,7 @@ class App:
         ui.button(s2, "key কাজ করছে না? এখানে দেখুন", lambda: self.key_help(w), kind="link", height=28).pack(
             anchor="w", padx=10, pady=(0, 12))
 
-        s3 = ui.section(p, "BACKUP")
+        s3 = ui.section(p, "ব্যাকআপ")
         ui.setting_row(s3, "Groq key (ঐচ্ছিক)", "Gemini এর দিনের ফ্রি লিমিট শেষ হলে Kotha নিজে থেকে Groq দিয়ে চালাবে। এটাও ফ্রি।",
                        lambda f: ui.entry(f, adv["groq_api_key"], show="•", width=260), first=True)
         ui.button(s3, "ফ্রি Groq key নাও  ↗", lambda: webbrowser.open("https://console.groq.com/keys"),
@@ -3460,10 +3623,12 @@ class App:
             ui.setting_row(s, t, d, lambda f, var=var: ui.switch(f, var), first=(i == 0))
         ctk.CTkFrame(s, height=8, width=1, fg_color="transparent").pack()
         if plat.IS_MAC:
-            s = ui.section(p, "MAC অনুমতি", "শর্টকাট, পেস্ট ও মাইক্রোফোনের জন্য এই তিনটায় Kotha কে চালু করুন।")
+            s = ui.section(p, "Mac অনুমতি", "শর্টকাট, পেস্ট ও মাইক্রোফোনের জন্য প্রথম তিনটা। মিটিংয়ে অন্যদের কণ্ঠ "
+                                           "শোনার জন্য Screen Recording ও চালু করুন (macOS 13+), তারপর Kotha আবার খুলুন।")
             pb = ctk.CTkFrame(s, fg_color="transparent")
             pb.pack(anchor="w", padx=18, pady=12)
-            for text, which in (("Input Monitoring", "input"), ("Accessibility", "accessibility"), ("Microphone", "mic")):
+            for text, which in (("Input Monitoring", "input"), ("Accessibility", "accessibility"),
+                                ("Microphone", "mic"), ("Screen Recording", "screen")):
                 ui.button(pb, text, lambda k=which: plat.open_privacy_pane(k), kind="ghost").pack(side="left", padx=(0, 6))
 
         # ---------- page: meeting notes ----------
@@ -3524,11 +3689,11 @@ class App:
                                                ("Groq model", "groq_model", "")]):
             ui.setting_row(s, title, None, lambda f, k=k, show=show: ui.entry(f, adv[k], show=show, width=300), first=(i == 0))
         ctk.CTkFrame(s, height=8, width=1, fg_color="transparent").pack()
-        s = ui.section(p, "OPENAI (পেইড)")
+        s = ui.section(p, "OpenAI (পেইড)")
         ui.setting_row(s, "OpenAI API key", None, lambda f: ui.entry(f, adv["openai_api_key"], show="•", width=300), first=True)
         ui.setting_row(s, "OpenAI model", None, lambda f: ui.entry(f, adv["openai_model"], width=300))
         ctk.CTkFrame(s, height=8, width=1, fg_color="transparent").pack()
-        s = ui.section(p, "OFFLINE")
+        s = ui.section(p, "Offline")
         if LOCAL_AVAILABLE:
             ui.setting_row(s, "Offline model", None, lambda f: ui.select(
                 f, adv["local_model"], ["large-v3-turbo", "large-v3", "medium", "small"], width=220), first=True)
@@ -3537,6 +3702,51 @@ class App:
         else:
             ui.label(s, plat.NO_OFFLINE_HINT, 12, color=C["muted"], wrap=600).pack(anchor="w", padx=18, pady=14)
         ctk.CTkFrame(s, height=8, width=1, fg_color="transparent").pack()
+
+        # ---------- page: support ----------
+        p = pages["support"]
+        warm = ui.card(p, fg_color=C["accent_soft"])
+        warm.pack(fill="x", pady=(4, 8))
+        wl = ctk.CTkFrame(warm, fg_color="transparent")
+        wl.pack(fill="x", padx=22, pady=18)
+        ui.label(wl, "☕  Kotha আপনার কাজে লাগলে", 19, "semibold").pack(anchor="w")
+        ui.label(wl, "Kotha বানানো আর ঠিক রাখতে সময় আর খরচ লাগে, তবুও এটা সবার জন্য ফ্রি। আপনি যদি এটা ব্যবহার করে "
+                     "উপকার পেয়ে থাকেন আর চান, একটা কফির দাম পাঠিয়ে আমাদের পাশে থাকতে পারেন। এতে নতুন ফিচার আর "
+                     "Mac, মিটিং নোটের মতো কাজগুলো এগিয়ে নিতে সুবিধা হয়।", 13, color=C["accent_text"], wrap=620
+                 ).pack(anchor="w", pady=(6, 8))
+        ui.label(wl, "না পাঠালেও কোনো সমস্যা নেই, Kotha আপনার জন্যই। আপনার ধন্যবাদটুকুই অনেক। ❤", 13, "medium",
+                 color=C["text"], wrap=620).pack(anchor="w")
+        pay = ui.card(p)
+        pay.pack(fill="x", pady=4)
+        ui.label(pay, "Send Money · Personal নাম্বার", 12, color=C["muted"]).pack(anchor="w", padx=22, pady=(16, 0))
+        nr = ctk.CTkFrame(pay, fg_color="transparent")
+        nr.pack(fill="x", padx=22, pady=(2, 8))
+        ui.label(nr, SUPPORT_NUMBER_TEXT, 26, "semibold").pack(side="left")
+        copy_btn = ui.button(nr, "⧉  কপি", None, kind="soft", height=36)
+        copy_btn.pack(side="left", padx=14)
+
+        def copy_number():
+            pyperclip.copy(SUPPORT_NUMBER)
+            copy_btn.configure(text="✓  কপি হয়েছে")
+            w.after(1800, lambda: copy_btn.configure(text="⧉  কপি"))
+        copy_btn.configure(command=copy_number)
+        wr = ctk.CTkFrame(pay, fg_color="transparent")
+        wr.pack(fill="x", padx=22, pady=(0, 6))
+        for name, col in SUPPORT_WALLETS:
+            ctk.CTkLabel(wr, text=f"  {name}  ·  Personal  ", font=ui.font(13, "semibold"), text_color="#ffffff",
+                         fg_color=col, corner_radius=14, height=34).pack(side="left", padx=(0, 8))
+        ui.label(pay, "bKash, Rocket আর Nagad, তিনটাতেই এই একই নাম্বার। যেকোনো একটা দিয়ে Send Money করতে পারেন। "
+                      "পরিমাণ পুরোপুরি আপনার ইচ্ছা।", 12, color=C["muted"], wrap=620).pack(anchor="w", padx=22, pady=(4, 18))
+        other = ui.card(p, fg_color=C["surface"])
+        other.pack(fill="x", pady=8)
+        ui.label(other, "টাকা ছাড়াও সাহায্য করা যায়", 14, "semibold").pack(anchor="w", padx=22, pady=(16, 4))
+        ui.label(other, "• GitHub এ একটা ⭐ দিন\n• বন্ধুদের বা সহকর্মীদের Kotha এর কথা বলুন\n"
+                        "• কোনো সমস্যা বা নতুন আইডিয়া থাকলে জানান", 13, color=C["muted"], wrap=620).pack(anchor="w", padx=22)
+        ob = ctk.CTkFrame(other, fg_color="transparent")
+        ob.pack(anchor="w", padx=22, pady=(10, 18))
+        ui.button(ob, "GitHub এ ⭐  ↗", lambda: webbrowser.open("https://github.com/procoder-manik/Kotha"),
+                  kind="ghost").pack(side="left")
+        ui.button(ob, "WhatsApp এ জানান", lambda: webbrowser.open(WHATSAPP_URL), kind="ghost").pack(side="left", padx=8)
 
         # ---------- page: about ----------
         p = pages["about"]
@@ -3555,7 +3765,7 @@ class App:
         dev.pack(fill="x", pady=4)
         dl = ctk.CTkFrame(dev, fg_color="transparent")
         dl.pack(fill="x", padx=20, pady=18)
-        ui.label(dl, "DEVELOPED BY", 11, "semibold", color=C["faint"]).pack(anchor="w")
+        ui.label(dl, "Developed by", 12, "medium", color=C["faint"]).pack(anchor="w")
         nm = ui.label(dl, DEV_NAME, 22, "semibold")
         nm.pack(anchor="w")
         ui.bind_link(nm, lambda: webbrowser.open(DEV_URL))
@@ -3568,6 +3778,7 @@ class App:
         ui.button(br, f"WhatsApp  {WHATSAPP_TEXT}", lambda: webbrowser.open(WHATSAPP_URL), kind="ghost").pack(side="left", padx=8)
         ui.button(br, "GitHub  ↗", lambda: webbrowser.open("https://github.com/procoder-manik/Kotha"),
                   kind="ghost").pack(side="left")
+        ui.button(br, "☕  Buy me a coffee", lambda: go("support"), kind="soft").pack(side="left", padx=8)
 
         # ---------- footer ----------
         foot = ctk.CTkFrame(w, fg_color="transparent")
@@ -3703,26 +3914,90 @@ def set_startup(enabled):
     plat.set_startup(enabled, APP)
 
 
-def selftest():
-    """Kotha.exe --selftest : checks that the bundled audio/meeting parts load (used to verify builds)."""
+def selftest(ui_check=False):
+    """Kotha --selftest [--ui]: checks the bundled audio, meeting and (with --ui) window code. Used to verify builds."""
     lines = [f"Kotha {VERSION} selftest on {plat.OS_NAME}"]
     ok = True
-    try:
-        import numpy  # noqa: F401
-        import soundcard as sc
-        spk = sc.default_speaker()
-        lines.append(f"speakers={len(sc.all_speakers())} mics={len(sc.all_microphones())} default_out={spk.name}")
-        loop = sc.get_microphone(id=str(spk.id), include_loopback=True)
-        with loop.recorder(samplerate=SR, channels=1) as r:
-            lines.append(f"loopback ok, {len(r.record(numframes=SR // 10))} frames")
-    except Exception as e:
-        ok = False
-        lines.append(f"audio FAILED: {e!r}")
-    try:
-        lines.append(f"meeting detection ok: {plat.active_meetings('')}")
-    except Exception as e:
-        ok = False
-        lines.append(f"detection FAILED: {e!r}")
+
+    def check(name, fn):
+        nonlocal ok
+        try:
+            lines.append(f"ok    {name}: {fn()}")
+        except Exception as e:
+            ok = False
+            lines.append(f"FAIL  {name}: {e!r}")
+
+    check("numpy", lambda: __import__("numpy").__version__)
+    if plat.IS_WIN:
+        def audio():
+            import soundcard as sc
+            spk = sc.default_speaker()
+            loop = sc.get_microphone(id=str(spk.id), include_loopback=True)
+            with loop.recorder(samplerate=SR, channels=1) as r:
+                return f"{len(sc.all_speakers())} speakers, {len(sc.all_microphones())} mics, loopback {len(r.record(numframes=SR // 10))} frames"
+        check("audio", audio)
+    else:
+        check("microphones", lambda: f"{len(list_mics())} found: {list_mics()[:3]}")
+
+        def sck():
+            import ScreenCaptureKit as SCK
+            cfg = SCK.SCStreamConfiguration.alloc().init()
+            return (f"ScreenCaptureKit loaded, audio capture supported={bool(cfg.respondsToSelector_(b'setCapturesAudio:'))}, "
+                    f"screen permission={plat.screen_capture_allowed()}")
+        check("system audio api", sck)
+        check("pcm conversion", lambda: bool(plat._cm()) and "CoreMedia functions bound")
+        check("mic in use (CoreAudio)", lambda: plat.mic_in_use_somewhere())
+    check("meeting detection", lambda: plat.active_meetings("", False))
+    check("fonts", lambda: f"loaded={ui.load_fonts(resource)} family={ui.FAMILY}")
+    if ui_check:
+        def windows():
+            app = App()
+            app.cfg["gemini_api_key"] = "AIzaSelfTest"
+            app.apply_meeting_settings()
+            r = app.root
+            out = []
+
+            def pump(sec=0.4):
+                end = time.time() + sec
+                while time.time() < end:
+                    r.update()
+                    time.sleep(0.02)
+            for page in ("start", "lang", "keys", "general", "meeting", "advanced", "support", "about"):
+                if page == "meeting" and not MEETING_SUPPORTED:
+                    continue
+                app.open_settings(page)
+                pump(0.25)
+            out.append(f"settings {app.settings_win.winfo_width()}x{app.settings_win.winfo_height()}")
+            app.settings_win.destroy()
+            app.open_history()
+            pump()
+            app.history_win.destroy()
+            app.open_notes()
+            pump(0.5)
+            out.append(f"notes {app.notes_win.winfo_width()}x{app.notes_win.winfo_height()}")
+            app.notes_win.destroy()
+            fb = app.float_bar
+            if fb is not None:
+                for hov in (None, "mic", "rec"):
+                    fb.expanded, fb.hover = True, hov
+                    fb.place()
+                    fb.draw()
+                    pump(0.1)
+                fb.expanded = False
+                fb.place()
+                fb.draw()
+                out.append("float bar drawn")
+            app.on_meeting_detected("Zoom", "Zoom")
+            pump(0.3)
+            app.card.close()
+            app.overlay.show("rec")
+            pump(0.2)
+            app.overlay.hide()
+            app.open_popup("test")
+            pump(0.2)
+            app.popup_win.destroy()
+            return ", ".join(out)
+        check("windows", windows)
     lines.append("RESULT: " + ("OK" if ok else "FAILED"))
     for line in lines:
         log("selftest: " + line)
@@ -3731,12 +4006,14 @@ def selftest():
             f.write("\n".join(lines) + "\n")
     except Exception:
         pass
+    print("\n".join(lines))
+    sys.stdout.flush()
     return 0 if ok else 1
 
 
 def main():
     if "--selftest" in sys.argv:
-        os._exit(selftest())
+        os._exit(selftest("--ui" in sys.argv))
     if not plat.acquire_single_instance(APP):
         plat.already_running_notice(APP)
         return

@@ -8,7 +8,7 @@ with open("kotha.py", encoding="utf-8") as f:
 hidden = [
     "plat_mac", "pystray._darwin",
     "objc", "Foundation", "AppKit", "Quartz", "CoreFoundation", "ApplicationServices",
-    "PyObjCTools", "ui_theme",
+    "PyObjCTools", "ui_theme", "ScreenCaptureKit", "CoreMedia", "CoreText",
 ]
 
 from PyInstaller.utils.hooks import collect_data_files
@@ -18,7 +18,7 @@ a = Analysis(
     pathex=["."],
     datas=[("assets", "assets")] + collect_data_files("customtkinter"),
     hiddenimports=hidden,
-    excludes=["unittest", "pydoc", "lib2to3", "setuptools", "numpy", "faster_whisper", "ctranslate2",
+    excludes=["unittest", "pydoc", "lib2to3", "setuptools", "faster_whisper", "ctranslate2",
               "onnxruntime", "av", "tokenizers", "huggingface_hub", "plat_win", "uiautomation", "comtypes",
               "soundcard"],
 )

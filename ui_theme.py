@@ -55,17 +55,24 @@ def load_fonts(resource):
             if IS_WIN:
                 ok |= bool(ctypes.windll.gdi32.AddFontResourceExW(path, 0x10, 0))   # FR_PRIVATE
             else:
-                try:
-                    ctk.FontManager.load_font(path)
-                    ok = True
+                try:                                                                # macOS: CoreText, this process only
+                    import CoreText
+                    from Foundation import NSURL
+                    res = CoreText.CTFontManagerRegisterFontsForURL(
+                        NSURL.fileURLWithPath_(path), CoreText.kCTFontManagerScopeProcess, None)
+                    ok |= bool(res[0] if isinstance(res, tuple) else res)
                 except Exception:
                     pass
     except OSError:
         pass
     if ok:
         FAMILY = "Hind Siliguri"
-        _FAMILIES.update({"regular": "Hind Siliguri", "medium": "Hind Siliguri Medium",
-                          "semibold": "Hind Siliguri SemiBold", "bold": "Hind Siliguri"})
+        if IS_WIN:      # Windows lists each weight as its own family
+            _FAMILIES.update({"regular": "Hind Siliguri", "medium": "Hind Siliguri Medium",
+                              "semibold": "Hind Siliguri SemiBold", "bold": "Hind Siliguri"})
+        else:           # macOS: one family, regular or bold
+            _FAMILIES.update({"regular": "Hind Siliguri", "medium": "Hind Siliguri",
+                              "semibold": "Hind Siliguri", "bold": "Hind Siliguri"})
     return ok
 
 
@@ -83,7 +90,10 @@ def font(size=13, weight="regular"):
     key = (size, weight)
     if key not in _fonts:
         fam = family(weight)
-        bold = "bold" if weight == "bold" or (weight in ("semibold", "medium") and fam == FAMILY == "Segoe UI") else "normal"
+        if IS_WIN:
+            bold = "bold" if weight == "bold" or (weight in ("semibold", "medium") and fam == FAMILY == "Segoe UI") else "normal"
+        else:
+            bold = "bold" if weight in ("semibold", "bold") else "normal"
         _fonts[key] = ctk.CTkFont(family=fam, size=size, weight=bold)
     return _fonts[key]
 
@@ -91,7 +101,7 @@ def font(size=13, weight="regular"):
 def tkfont(size=11, weight="regular"):
     """Plain-Tk font tuple (for canvas text)."""
     fam = family(weight)
-    return (fam, size, "bold" if weight == "bold" else "normal")
+    return (fam, size, "bold" if weight == "bold" or (not IS_WIN and weight == "semibold") else "normal")
 
 
 # --------------------------------------------------------------------------
@@ -180,7 +190,7 @@ def set_icon(win, path):
 # Components
 # --------------------------------------------------------------------------
 def card(master, **kw):
-    opts = dict(fg_color=C["surface"], corner_radius=16, border_width=1, border_color=C["border"])
+    opts = dict(fg_color=C["surface"], corner_radius=18, border_width=0, border_color=C["border"])
     opts.update(kw)
     return ctk.CTkFrame(master, **opts)
 
@@ -201,7 +211,7 @@ def button(master, text, command=None, kind="primary", width=0, height=38, **kw)
     }
     fg, hover, txt, bw, bc = styles[kind]
     return ctk.CTkButton(master, text=text, command=command, fg_color=fg, hover_color=hover, text_color=txt,
-                         border_width=bw, border_color=bc, corner_radius=11, height=height,
+                         border_width=bw, border_color=bc, corner_radius=min(height // 2, 18), height=height,
                          width=width or 0, font=font(13, "semibold" if kind in ("primary", "rec") else "medium"), **kw)
 
 
@@ -212,7 +222,7 @@ def switch(master, variable, command=None):
 
 
 def select(master, variable, values, width=280, command=None):
-    return ctk.CTkOptionMenu(master, variable=variable, values=values, width=width, height=36, corner_radius=10,
+    return ctk.CTkOptionMenu(master, variable=variable, values=values, width=width, height=38, corner_radius=12,
                              fg_color=C["surface2"], button_color=C["surface3"], button_hover_color=C["border"],
                              text_color=C["text"], font=font(13), dropdown_font=font(13),
                              dropdown_fg_color=C["surface2"], dropdown_hover_color=C["accent_soft"],
@@ -220,8 +230,8 @@ def select(master, variable, values, width=280, command=None):
 
 
 def entry(master, variable, show="", width=320, placeholder=""):
-    return ctk.CTkEntry(master, textvariable=variable, show=show, width=width, height=38, corner_radius=10,
-                        fg_color=C["surface2"], border_color=C["border"], border_width=1, text_color=C["text"],
+    return ctk.CTkEntry(master, textvariable=variable, show=show, width=width, height=40, corner_radius=12,
+                        fg_color=C["surface2"], border_color=C["surface3"], border_width=1, text_color=C["text"],
                         font=font(13), placeholder_text=placeholder or None, placeholder_text_color=C["faint"])
 
 
@@ -242,9 +252,9 @@ def keycap(master, text):
 def setting_row(parent, title, desc=None, control=None, first=False):
     """A titled row inside a card: text on the left, control on the right. `control(frame)` builds it."""
     row = ctk.CTkFrame(parent, fg_color="transparent")
-    row.pack(fill="x", padx=18, pady=(14 if first else 6, 6))
+    row.pack(fill="x", padx=20, pady=(16 if first else 8, 8))
     if not first:
-        ctk.CTkFrame(parent, height=1, fg_color=C["border"]).pack(fill="x", padx=18, before=row)
+        ctk.CTkFrame(parent, height=1, fg_color=C["surface3"]).pack(fill="x", padx=20, before=row)
     left = ctk.CTkFrame(row, fg_color="transparent")
     left.pack(side="left", fill="x", expand=True)
     label(left, title, 14, "medium").pack(anchor="w")
@@ -258,7 +268,7 @@ def setting_row(parent, title, desc=None, control=None, first=False):
 
 def section(parent, title=None, subtitle=None):
     if title:
-        label(parent, title, 12, "semibold", color=C["faint"]).pack(anchor="w", padx=4, pady=(14, 6))
+        label(parent, title, 13, "semibold", color=C["muted"]).pack(anchor="w", padx=8, pady=(18, 8))
     c = card(parent)
     c.pack(fill="x", pady=(0, 4))
     if subtitle:

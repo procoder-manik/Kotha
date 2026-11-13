@@ -8,6 +8,7 @@ Start at login   : LaunchAgent plist in ~/Library/LaunchAgents
 Single instance  : localhost socket lock
 """
 
+import ctypes
 import os
 import plistlib
 import socket
@@ -71,7 +72,7 @@ ORDER = ["ctrl", "lctrl", "rctrl", "alt", "lalt", "ralt", "shift", "lshift", "rs
 DEFAULT_HOTKEY = ["ralt"]    # hold Right Option, talk, release
 DEFAULT_NOTE_HOTKEY = ["ctrl", "alt", "m"]
 NOTE_HOTKEY_PRESETS = [["ctrl", "alt", "m"], ["ctrl", "shift", "m"], ["f8"]]
-SUPPORTS_MEETINGS = False     # meeting notes: Windows first, Mac in a later version
+SUPPORTS_MEETINGS = True
 HOTKEY_PRESETS = [
     ["ralt"], ["ctrl", "alt"], ["ctrl", "win"], ["rctrl"], ["alt", "win"],
     ["ctrl", "shift", "space"], ["f9"],
@@ -122,6 +123,7 @@ _PANES = {
     "accessibility": "Privacy_Accessibility",
     "input": "Privacy_ListenEvent",
     "mic": "Privacy_Microphone",
+    "screen": "Privacy_ScreenCapture",
 }
 
 
@@ -164,6 +166,25 @@ def init_overlay(win, key):
         pass
     win.configure(bg="systemTransparent")
     win.attributes("-alpha", 0.96)
+
+
+def init_float(win, key):
+    """Floating handle / pop-up card: borderless, see-through, never takes focus from your app."""
+    init_overlay(win, key)
+    try:
+        win.attributes("-alpha", 1.0)
+    except Exception:
+        pass
+
+
+SYMBOL_FONT = "Apple Symbols"
+
+
+def open_folder(path):
+    try:
+        subprocess.Popen(["open", path])
+    except Exception:
+        pass
 
 
 def make_no_activate(widget, click_through=True):
@@ -468,5 +489,248 @@ def setup_process():
     pass
 
 
-def active_meetings(self_exe=""):
-    return []                # not implemented on macOS yet
+# --------------------------------------------------------------------------
+# Meeting notes on macOS: system audio (the other people in the call) via ScreenCaptureKit (macOS 13+),
+# which needs the "Screen Recording" permission. Your own voice comes from the microphone.
+# --------------------------------------------------------------------------
+class _ASBD(ctypes.Structure):
+    _fields_ = [("rate", ctypes.c_double), ("fmt", ctypes.c_uint32), ("flags", ctypes.c_uint32),
+                ("bytes_pp", ctypes.c_uint32), ("frames_pp", ctypes.c_uint32), ("bytes_pf", ctypes.c_uint32),
+                ("channels", ctypes.c_uint32), ("bits", ctypes.c_uint32), ("reserved", ctypes.c_uint32)]
+
+
+_cm_lib = None
+
+
+def _cm():
+    global _cm_lib
+    if _cm_lib is None:
+        lib = ctypes.CDLL("/System/Library/Frameworks/CoreMedia.framework/CoreMedia")
+        vp = ctypes.c_void_p
+        lib.CMSampleBufferGetDataBuffer.restype, lib.CMSampleBufferGetDataBuffer.argtypes = vp, [vp]
+        lib.CMBlockBufferGetDataLength.restype, lib.CMBlockBufferGetDataLength.argtypes = ctypes.c_size_t, [vp]
+        lib.CMBlockBufferCopyDataBytes.restype = ctypes.c_int32
+        lib.CMBlockBufferCopyDataBytes.argtypes = [vp, ctypes.c_size_t, ctypes.c_size_t, vp]
+        lib.CMSampleBufferGetFormatDescription.restype, lib.CMSampleBufferGetFormatDescription.argtypes = vp, [vp]
+        lib.CMAudioFormatDescriptionGetStreamBasicDescription.restype = ctypes.POINTER(_ASBD)
+        lib.CMAudioFormatDescriptionGetStreamBasicDescription.argtypes = [vp]
+        _cm_lib = lib
+    return _cm_lib
+
+
+def _sample_buffer_to_pcm16(sbuf, target_rate=16000):
+    """CMSampleBuffer (audio) -> mono 16 kHz int16 bytes."""
+    import numpy as np
+    import objc
+    lib = _cm()
+    ptr = objc.pyobjc_id(sbuf)
+    block = lib.CMSampleBufferGetDataBuffer(ptr)
+    if not block:
+        return b""
+    n = lib.CMBlockBufferGetDataLength(block)
+    if not n:
+        return b""
+    raw = ctypes.create_string_buffer(n)
+    if lib.CMBlockBufferCopyDataBytes(block, 0, n, raw) != 0:
+        return b""
+    asbd = lib.CMAudioFormatDescriptionGetStreamBasicDescription(lib.CMSampleBufferGetFormatDescription(ptr)).contents
+    is_float = bool(asbd.flags & 1)
+    planar = bool(asbd.flags & 32)
+    ch = max(1, asbd.channels)
+    if is_float and asbd.bits == 32:
+        a = np.frombuffer(raw, dtype="<f4")
+    elif asbd.bits == 16:
+        a = np.frombuffer(raw, dtype="<i2").astype(np.float32) / 32768.0
+    elif asbd.bits == 32:
+        a = np.frombuffer(raw, dtype="<i4").astype(np.float32) / 2147483648.0
+    else:
+        return b""
+    if ch > 1:
+        k = len(a) // ch * ch
+        a = a[:k].reshape(ch, -1).mean(axis=0) if planar else a[:k].reshape(-1, ch).mean(axis=1)
+    if abs(asbd.rate - target_rate) > 1 and len(a) > 1:
+        m = int(len(a) * target_rate / asbd.rate)
+        a = np.interp(np.linspace(0, len(a) - 1, m), np.arange(len(a)), a)
+    return np.clip(a * 32767, -32768, 32767).astype("<i2").tobytes()
+
+
+def screen_capture_allowed():
+    try:
+        return bool(Quartz.CGPreflightScreenCaptureAccess())
+    except Exception:
+        return True            # older macOS: no way to ask, just try
+
+
+def request_screen_capture():
+    try:
+        Quartz.CGRequestScreenCaptureAccess()
+    except Exception:
+        pass
+
+
+_out_cls = None
+
+
+def _output_class():
+    global _out_cls
+    if _out_cls is None:
+        import objc
+        from Foundation import NSObject
+
+        class KothaAudioOutput(NSObject, protocols=[objc.protocolNamed("SCStreamOutput")]):
+            def initWithCallback_(self, cb):
+                self = objc.super(KothaAudioOutput, self).init()
+                if self is None:
+                    return None
+                self.cb = cb
+                return self
+
+            def stream_didOutputSampleBuffer_ofType_(self, stream, sbuf, otype):
+                if otype != 1:                        # SCStreamOutputTypeAudio
+                    return
+                try:
+                    pcm = _sample_buffer_to_pcm16(sbuf)
+                    if pcm:
+                        self.cb(pcm)
+                except Exception as e:
+                    _log(f"system audio buffer: {e!r}")
+        _out_cls = KothaAudioOutput
+    return _out_cls
+
+
+class SystemAudioCapture:
+    """Everything the Mac plays, as 16 kHz mono int16 chunks passed to on_pcm()."""
+
+    def __init__(self, on_pcm):
+        self.on_pcm, self.stream, self.out = on_pcm, None, None
+
+    def start(self, timeout=12):
+        import ScreenCaptureKit as SCK
+        cfg = SCK.SCStreamConfiguration.alloc().init()
+        if not cfg.respondsToSelector_(b"setCapturesAudio:"):
+            raise RuntimeError("system audio needs macOS 13 or newer")
+        if not screen_capture_allowed():
+            request_screen_capture()
+            raise PermissionError("Screen Recording permission is missing")
+        box, done = {}, threading.Event()
+
+        def got(content, error):
+            box["content"], box["error"] = content, error
+            done.set()
+        SCK.SCShareableContent.getShareableContentWithCompletionHandler_(got)
+        if not done.wait(timeout) or box.get("content") is None:
+            raise PermissionError(f"cannot read the screen list: {box.get('error')}")
+        displays = box["content"].displays()
+        if not displays:
+            raise RuntimeError("no display found")
+        flt = SCK.SCContentFilter.alloc().initWithDisplay_excludingWindows_(displays[0], [])
+        cfg.setCapturesAudio_(True)
+        try:
+            cfg.setExcludesCurrentProcessAudio_(True)
+            cfg.setSampleRate_(16000)
+            cfg.setChannelCount_(1)
+            cfg.setWidth_(2)
+            cfg.setHeight_(2)
+            import CoreMedia
+            cfg.setMinimumFrameInterval_(CoreMedia.CMTimeMake(1, 1))
+        except Exception as e:
+            _log(f"screencapturekit config: {e!r}")
+        self.stream = SCK.SCStream.alloc().initWithFilter_configuration_delegate_(flt, cfg, None)
+        self.out = _output_class().alloc().initWithCallback_(self.on_pcm)
+        ok, err = self.stream.addStreamOutput_type_sampleHandlerQueue_error_(self.out, 1, None, None)
+        if not ok:
+            raise RuntimeError(f"addStreamOutput failed: {err}")
+        started, done2 = {}, threading.Event()
+
+        def began(error):
+            started["error"] = error
+            done2.set()
+        self.stream.startCaptureWithCompletionHandler_(began)
+        if not done2.wait(timeout):
+            raise RuntimeError("system audio did not start")
+        if started.get("error") is not None:
+            raise PermissionError(f"system audio start failed: {started['error']}")
+
+    def stop(self):
+        st, self.stream = self.stream, None
+        if st is not None:
+            try:
+                st.stopCaptureWithCompletionHandler_(lambda e: None)
+            except Exception:
+                pass
+
+
+# --------------------------------------------------------------------------
+# Meeting detection: a call app is running AND something is using the microphone
+# --------------------------------------------------------------------------
+NATIVE_CALL_APPS = [   # (bundle id, label) in priority order
+    ("us.zoom.xos", "Zoom"), ("com.microsoft.teams2", "Microsoft Teams"), ("com.microsoft.teams", "Microsoft Teams"),
+    ("Cisco-Systems.Spark", "Webex"), ("com.cisco.webexmeetingsapp", "Webex"), ("com.apple.FaceTime", "FaceTime"),
+    ("com.tinyspeck.slackmacgap", "Slack"), ("com.hnc.Discord", "Discord"), ("net.whatsapp.WhatsApp", "WhatsApp"),
+    ("ru.keepcoder.Telegram", "Telegram"), ("com.skype.skype", "Skype"), ("com.electron.lark", "Lark"),
+    ("com.ringcentral.glip", "RingCentral"), ("org.whispersystems.signal-desktop", "Signal"),
+]
+BROWSER_BUNDLES = {"com.google.Chrome", "com.apple.Safari", "org.mozilla.firefox", "com.microsoft.edgemac",
+                   "com.brave.Browser", "company.thebrowser.Browser", "com.operasoftware.Opera",
+                   "com.vivaldi.Vivaldi", "ai.perplexity.comet"}
+WEB_MEETINGS = [("Google Meet", "Google Meet"), ("Meet - ", "Google Meet"), ("meet.google.com", "Google Meet"),
+                ("Zoom", "Zoom"), ("Microsoft Teams", "Microsoft Teams"), ("Webex", "Webex"), ("Jitsi", "Jitsi Meet"),
+                ("Whereby", "Whereby"), ("Discord", "Discord"), ("Slack", "Slack"), ("Messenger", "Messenger"),
+                ("WhatsApp", "WhatsApp")]
+
+
+def _four(code):
+    return int.from_bytes(code.encode("ascii"), "big")
+
+
+def mic_in_use_somewhere():
+    """True when any app (not only Kotha) has the default microphone open. CoreAudio, no permission needed."""
+    try:
+        ca = ctypes.CDLL("/System/Library/Frameworks/CoreAudio.framework/CoreAudio")
+
+        class Addr(ctypes.Structure):
+            _fields_ = [("sel", ctypes.c_uint32), ("scope", ctypes.c_uint32), ("elem", ctypes.c_uint32)]
+        ca.AudioObjectGetPropertyData.argtypes = [ctypes.c_uint32, ctypes.POINTER(Addr), ctypes.c_uint32,
+                                                  ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint32), ctypes.c_void_p]
+        ca.AudioObjectGetPropertyData.restype = ctypes.c_int32
+
+        def get(obj, sel):
+            a, size, val = Addr(_four(sel), _four("glob"), 0), ctypes.c_uint32(4), ctypes.c_uint32(0)
+            err = ca.AudioObjectGetPropertyData(obj, ctypes.byref(a), 0, None, ctypes.byref(size), ctypes.byref(val))
+            return val.value if err == 0 else None
+        dev = get(1, "dIn ")                              # default input device of the system object
+        return bool(dev and get(dev, "gone"))             # kAudioDevicePropertyDeviceIsRunningSomewhere
+    except Exception as e:
+        _log(f"mic status: {e!r}")
+        return False
+
+
+def _browser_call_label():
+    try:
+        infos = Quartz.CGWindowListCopyWindowInfo(Quartz.kCGWindowListOptionOnScreenOnly, Quartz.kCGNullWindowID) or []
+        for w in infos:
+            title = str(w.get("kCGWindowName", "") or "")
+            for frag, label in WEB_MEETINGS:
+                if frag in title:
+                    return label
+    except Exception:
+        pass
+    return None
+
+
+def active_meetings(self_exe="", busy=False):
+    """[(key, label)] at most one best guess. `busy` = Kotha itself is using the microphone right now."""
+    if busy or not mic_in_use_somewhere():
+        return []
+    try:
+        from AppKit import NSWorkspace
+        ids = {str(a.bundleIdentifier() or "") for a in NSWorkspace.sharedWorkspace().runningApplications()}
+    except Exception:
+        return []
+    for bundle, label in NATIVE_CALL_APPS:
+        if bundle in ids:
+            return [(label, label)]
+    if ids & BROWSER_BUNDLES:
+        label = _browser_call_label() or "ব্রাউজারের কল"
+        return [(label, label)]
+    return []

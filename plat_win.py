@@ -152,6 +152,24 @@ def init_overlay(win, key):
     win.attributes("-alpha", 0.96)
 
 
+def init_float(win, key):
+    """Borderless, always-on-top, see-through window for the floating handle and pop-up cards."""
+    win.overrideredirect(True)
+    win.attributes("-topmost", True)
+    win.configure(bg=key)
+    win.attributes("-transparentcolor", key)
+
+
+SYMBOL_FONT = "Segoe UI Symbol"
+
+
+def open_folder(path):
+    try:
+        os.startfile(path)
+    except Exception:
+        pass
+
+
 def make_no_activate(widget, click_through=True):
     """Never take focus from the app you are typing in. click_through=False keeps the window clickable."""
     GWL_EXSTYLE = -20
@@ -487,7 +505,7 @@ def window_titles():
     return titles
 
 
-def active_meetings(self_exe=""):
+def active_meetings(self_exe="", busy=False):
     """[(key, label)] for call apps using the microphone right now. key == label, so an app that briefly
     reopens the mic (mute/unmute, device switch) still counts as the same meeting."""
     found = {}
