@@ -6,6 +6,9 @@ Bangla, English, mixed Banglish, Hindi and 80+ more languages.
   Double-tap the shortcut                 -> hands-free, press once more to finish
   Esc while recording                     -> cancel
 
+Meeting notes (Windows): records your mic + the call audio, writes the transcript and a summary.
+  Win + Alt + M or the floating button on the left edge          -> start / stop meeting notes
+
 Open source. Engines: Gemini Transcribe (default, free API key), Gemini Flash,
 Groq, OpenAI, and an optional fully offline Whisper engine (Kotha Offline build).
 """
@@ -60,7 +63,7 @@ else:
 
 APP = "Kotha"
 APP_BN = "কথা"
-VERSION = "2.2.2"
+VERSION = "2.3.0"
 CFG_VERSION = 3
 DATA_DIR = os.path.join(plat.USER_DATA_BASE, APP)
 MODELS_DIR = os.path.join(DATA_DIR, "models")
@@ -130,6 +133,7 @@ def lang_info(cfg):
 # --------------------------------------------------------------------------
 TOKEN_VKS, MOD_TOKENS, SOLO_OK, TOKEN_LABEL, ORDER = plat.TOKEN_VKS, plat.MOD_TOKENS, plat.SOLO_OK, plat.TOKEN_LABEL, plat.ORDER
 HOTKEY_PRESETS, DEFAULT_HOTKEY = plat.HOTKEY_PRESETS, plat.DEFAULT_HOTKEY
+DEFAULT_NOTE_HOTKEY, NOTE_HOTKEY_PRESETS = plat.DEFAULT_NOTE_HOTKEY, plat.NOTE_HOTKEY_PRESETS
 _VK_SIDE, _VK_GENERIC = plat.VK_SIDE, plat.VK_GENERIC
 
 
@@ -200,6 +204,15 @@ DEFAULTS = {
     "hold_threshold_ms": 300,
     "double_tap_ms": 400,
     "max_seconds": 590,
+    # meeting notes
+    "notes_enabled": plat.SUPPORTS_MEETINGS,
+    "float_button": True,
+    "meeting_detect": "ask",            # ask | auto | off
+    "meeting_autostop": True,
+    "note_hotkey": list(plat.DEFAULT_NOTE_HOTKEY),
+    "notes_language": "auto",           # auto | bn | en
+    "keep_meeting_audio": False,
+    "float_y": 0.42,
 }
 
 
@@ -228,6 +241,8 @@ class Config(dict):
         self.update(saved)
         if self["provider"] == "local" and not LOCAL_AVAILABLE:
             self["provider"] = "gemini_live"
+        if not hotkey_valid(self.get("note_hotkey") or []):
+            self["note_hotkey"] = list(DEFAULT_NOTE_HOTKEY)
         if not hotkey_valid(self["hotkey"]):
             self["hotkey"] = list(DEFAULT_HOTKEY)
 
@@ -1221,6 +1236,719 @@ class Controller(threading.Thread):
 
 
 # --------------------------------------------------------------------------
+# Meeting notes: record a whole meeting (your mic + everyone else through the speakers),
+# transcribe it in 2-minute pieces while it runs, then write a summary with key points.
+# --------------------------------------------------------------------------
+MEET_DIR = os.path.join(DATA_DIR, "meetings")
+MEET_CHUNK_S = 120              # transcribe every 2 minutes of audio
+MEET_MAX_HOURS = 6
+MEETING_SUPPORTED = plat.SUPPORTS_MEETINGS
+
+
+def _fmt_clock(seconds):
+    seconds = int(seconds)
+    h, m, s = seconds // 3600, (seconds % 3600) // 60, seconds % 60
+    return f"{h}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}"
+
+
+class MeetingRecorder:
+    """Two tracks on disk, kept in sync with the wall clock: mic.pcm (you) and sys.pcm (what the
+    computer plays, i.e. the other people in the call). 16 kHz mono int16."""
+
+    def __init__(self, folder, mic_name=""):
+        self.folder, self.mic_name = folder, mic_name
+        self.paths = {k: os.path.join(folder, f"{k}.pcm") for k in ("mic", "sys")}
+        self.written = {"mic": 0, "sys": 0}
+        self.level = {"mic": 0.0, "sys": 0.0}
+        self.alive = {"mic": False, "sys": False}
+        self.errors = {}
+        self.running = False
+        self.threads = []
+        self.lock = threading.Lock()
+
+    def start(self):
+        import soundcard  # noqa: F401  (fail early, in the caller's thread, if it is missing)
+        self.t0 = time.monotonic()
+        self.running = True
+        for kind in ("mic", "sys"):
+            t = threading.Thread(target=self._loop, args=(kind,), daemon=True)
+            t.start()
+            self.threads.append(t)
+
+    def _device(self, kind):
+        import soundcard as sc
+        if kind == "sys":
+            spk = sc.default_speaker()
+            return sc.get_microphone(id=str(spk.id), include_loopback=True), spk.id
+        if self.mic_name:
+            for m in sc.all_microphones():
+                if m.name == self.mic_name or m.name.startswith(self.mic_name) or self.mic_name in m.name:
+                    return m, None
+        return sc.default_microphone(), None
+
+    def _loop(self, kind):
+        import numpy as np
+        import soundcard as sc
+        f = open(self.paths[kind], "ab")
+        while self.running:
+            try:
+                dev, spk_id = self._device(kind)
+                with dev.recorder(samplerate=SR, channels=1, blocksize=SR // 10) as r:
+                    self.alive[kind] = True
+                    self.errors.pop(kind, None)
+                    last_check = time.monotonic()
+                    while self.running:
+                        data = r.record(numframes=SR // 10)          # 100 ms
+                        a = data[:, 0] if data.ndim == 2 else data
+                        a = np.nan_to_num(a)
+                        self.level[kind] = min(1.0, float(np.sqrt(np.mean(a * a))) * 9) if len(a) else 0.0
+                        self._append(kind, f, np.clip(a * 32767, -32768, 32767).astype("<i2").tobytes(), len(a))
+                        if kind == "sys" and time.monotonic() - last_check > 5:
+                            last_check = time.monotonic()
+                            try:
+                                if sc.default_speaker().id != spk_id:      # headphones plugged in, etc.
+                                    log("meeting: output device changed, reopening loopback")
+                                    break
+                            except Exception:
+                                pass
+            except Exception as e:
+                self.alive[kind] = False
+                if self.errors.get(kind) != str(e):
+                    log(f"meeting {kind} capture error: {e!r}")
+                self.errors[kind] = str(e)
+                time.sleep(2)
+        self.alive[kind] = False
+        f.close()
+
+    def _append(self, kind, f, pcm, n):
+        with self.lock:
+            start = int((time.monotonic() - self.t0) * SR) - n
+            gap = start - self.written[kind]
+            if gap > SR // 4:                      # device delivered nothing for a while: keep the timeline
+                f.write(b"\x00\x00" * gap)
+                self.written[kind] += gap
+            f.write(pcm)
+            self.written[kind] += n
+            f.flush()
+
+    def elapsed(self):
+        return time.monotonic() - self.t0 if self.running else max(self.written.values()) / SR
+
+    def available(self):
+        """Samples that both tracks have (a dead track does not hold the other back)."""
+        live = [self.written[k] for k in ("mic", "sys") if self.alive[k] or self.written[k]]
+        if not live:
+            return 0
+        return min(live) if self.running else max(live)
+
+    def stop(self):
+        self.running = False
+        for t in self.threads:
+            t.join(timeout=3)
+        n = max(self.written.values())
+        for kind in ("mic", "sys"):           # pad the shorter track so both line up
+            if self.written[kind] < n:
+                with open(self.paths[kind], "ab") as f:
+                    f.write(b"\x00\x00" * (n - self.written[kind]))
+                self.written[kind] = n
+
+
+def _read_track(path, a, b):
+    try:
+        with open(path, "rb") as f:
+            f.seek(a * 2)
+            data = f.read((b - a) * 2)
+    except OSError:
+        data = b""
+    return data + b"\x00\x00" * (b - a - len(data) // 2)
+
+
+def mix_tracks(folder, a, b):
+    """Mix mic + system audio. When the other side is talking loudly, the mic (which also hears the
+    speakers) is turned down so voices are not doubled."""
+    import numpy as np
+    mic = np.frombuffer(_read_track(os.path.join(folder, "mic.pcm"), a, b), dtype="<i2").astype(np.float32)
+    sysa = np.frombuffer(_read_track(os.path.join(folder, "sys.pcm"), a, b), dtype="<i2").astype(np.float32)
+    n = len(mic) // BLOCK * BLOCK
+    if n:
+        mb = mic[:n].reshape(-1, BLOCK)
+        sb = sysa[:n].reshape(-1, BLOCK)
+        m_rms = np.sqrt((mb * mb).mean(axis=1)) + 1
+        s_rms = np.sqrt((sb * sb).mean(axis=1)) + 1
+        gain = np.where(s_rms > 2 * m_rms, 0.35, 1.0).astype(np.float32)
+        mic[:n] = (mb * gain[:, None]).reshape(-1)
+    out = np.clip(mic + sysa, -32768, 32767).astype("<i2")
+    return out.tobytes()
+
+
+def split_tracks(folder, a, b):
+    """(my voice, everyone else). Blocks where the mic only hears the speakers (echo) are silenced in
+    the mic track, so the other people's words are not attributed to you."""
+    import numpy as np
+    mic = np.frombuffer(_read_track(os.path.join(folder, "mic.pcm"), a, b), dtype="<i2").astype(np.float32)
+    sysa = np.frombuffer(_read_track(os.path.join(folder, "sys.pcm"), a, b), dtype="<i2").astype(np.float32)
+    n = len(mic) // BLOCK * BLOCK
+    if n:
+        mb = mic[:n].reshape(-1, BLOCK)
+        sb = sysa[:n].reshape(-1, BLOCK)
+        m_rms = np.sqrt((mb * mb).mean(axis=1)) + 1
+        s_rms = np.sqrt((sb * sb).mean(axis=1)) + 1
+        echo = s_rms > 2 * m_rms
+        mic[:n] = (mb * np.where(echo, 0.0, 1.0)[:, None]).reshape(-1)
+    return mic.astype("<i2").tobytes(), sysa.astype("<i2").tobytes()
+
+
+def _block_levels(raw):
+    import numpy as np
+    a = np.frombuffer(raw, dtype="<i2").astype(np.float32) / 32768.0
+    n = len(a) // BLOCK * BLOCK
+    if not n:
+        return []
+    return list(np.sqrt((a[:n].reshape(-1, BLOCK) ** 2).mean(axis=1)))
+
+
+ME_LABEL = "আমি"
+
+
+def _meeting_track_prompt(cfg, seconds, who, context):
+    lines = [
+        "You transcribe meeting recordings.",
+        f"This audio is a {int(seconds)}-second part of a longer online meeting.",
+        ("It is the local user's own microphone, so normally only the user is speaking." if who == "me" else
+         "It is the call audio: the other participants (one or more people), not the local user."),
+        "Transcribe everything that is said, faithfully and completely. Never summarize, translate, answer "
+        "questions, or skip parts.",
+        "People often mix Bangla and English: write Bangla words in Bangla script and English words in English "
+        "letters, exactly as spoken (e.g. 'আমরা next week এ launch করবো'). Other languages: their own script.",
+        "Drop filler sounds (um, uh, আ, আহ) but keep every meaningful word. Use natural punctuation ('।' for Bangla).",
+        "Return a JSON list of segments in time order. Each segment has: start = approximate seconds from the "
+        "beginning of this audio, speaker = " + ('"me"' if who == "me" else
+                                    '"Speaker 1", "Speaker 2", ... (the same number for the same voice; use the '
+                                    "person's real name instead if it is clearly said)") +
+        ", text = what was said. Start a new segment at every change of speaker, or about every 20 seconds.",
+        "If there is no speech at all, return [].",
+    ]
+    v = vocab_list(cfg)
+    if v:
+        lines.append("These names and terms may appear; spell them exactly like this: " + ", ".join(v))
+    if context:
+        lines.append("For continuity, the transcript so far ended with:\n" + context[-600:])
+    return "\n".join(lines)
+
+
+SEGMENT_SCHEMA = {"type": "ARRAY", "items": {"type": "OBJECT", "properties": {
+    "start": {"type": "NUMBER"}, "speaker": {"type": "STRING"}, "text": {"type": "STRING"}},
+    "required": ["start", "text"]}}
+
+
+def _gemini_generate(cfg, parts, system_text, timeout, schema=None):
+    """One generateContent call across the Gemini model chain (each model has its own free quota)."""
+    models = []
+    for m in [cfg.get("gemini_model", "").strip() or "gemini-flash-latest"] + GEMINI_FALLBACKS:
+        if m not in models:
+            models.append(m)
+    headers = {"x-goog-api-key": cfg["gemini_api_key"].strip()}
+    now = time.monotonic()
+    last = None
+    for model in models:
+        if _model_blocked.get(model, 0) > now:
+            continue
+        body = {"system_instruction": {"parts": [{"text": system_text}]},
+                "contents": [{"role": "user", "parts": parts}]}
+        gen = {}
+        if model.startswith("gemini-2.5-flash"):
+            gen["thinkingConfig"] = {"thinkingBudget": 0}
+        elif "flash" in model:
+            gen["thinkingConfig"] = {"thinkingLevel": "low"}
+        if schema:
+            gen.update({"responseMimeType": "application/json", "responseSchema": schema})
+        if gen:
+            body["generationConfig"] = gen
+        url = f"{GEMINI_BASE}/v1beta/models/{model}:generateContent"
+        try:
+            r = SESSION.post(url, json=body, headers=headers, timeout=timeout)
+            if r.status_code == 400 and gen.pop("thinkingConfig", None) is not None:
+                if not gen:
+                    body.pop("generationConfig")
+                r = SESSION.post(url, json=body, headers=headers, timeout=timeout)
+            _gemini_check(r, model)
+            return _gemini_text(r)
+        except QuotaError as e:
+            _model_blocked[model] = now + min(e.wait, 6 * 3600)
+            last = e
+        except (BusyError, requests.exceptions.Timeout) as e:
+            _model_blocked[model] = now + 60
+            last = e
+        except EmptyResult as e:
+            last = e
+    if isinstance(last, QuotaError):
+        raise QuotaError("all gemini models exhausted", 60)
+    raise EngineError(f"Gemini: {str(last)[:120] if last else 'no model available'}")
+
+
+def _parse_segments(text, who):
+    label = ME_LABEL if who == "me" else "Speaker 1"
+    try:
+        data = json.loads(text)
+        out = []
+        for seg in data if isinstance(data, list) else []:
+            t = clean_text(str(seg.get("text", "")))
+            if not t:
+                continue
+            sp = str(seg.get("speaker") or label).strip()
+            if who == "me" or sp.lower() in ("me", "user", "local user"):
+                sp = ME_LABEL
+            out.append([float(seg.get("start") or 0), sp, t])
+        return out
+    except Exception:
+        t = clean_text(text)
+        return [[0.0, label, t]] if t else []
+
+
+def transcribe_meeting_track(raw, cfg, who, context=""):
+    """Timed segments [[seconds, speaker, text], ...] for one track of a meeting piece."""
+    seconds = len(raw) / 2 / SR
+    label = ME_LABEL if who == "me" else "Speaker 1"
+    if cfg.get("provider") == "local" and LOCAL_AVAILABLE:
+        t = clean_text(LOCAL.transcribe(raw, cfg))
+        return [[0.0, label, t]] if t else []
+    wav = to_wav(raw)
+    if cfg.get("gemini_api_key", "").strip():
+        try:
+            parts = [{"inline_data": {"mime_type": "audio/wav", "data": base64.b64encode(wav).decode()}},
+                     {"text": "Transcribe this meeting audio."}]
+            text = _gemini_generate(cfg, parts, _meeting_track_prompt(cfg, seconds, who, context), 180, SEGMENT_SCHEMA)
+            return _parse_segments(text, who)
+        except (QuotaError, EngineError) as e:
+            log(f"meeting {who}: gemini failed ({str(e)[:120]}), trying backup")
+            if not cfg.get("groq_api_key", "").strip() and not cfg.get("openai_api_key", "").strip():
+                raise
+    if cfg.get("groq_api_key", "").strip():
+        t = clean_text(_groq(wav, cfg))
+    elif cfg.get("openai_api_key", "").strip():
+        t = clean_text(transcribe_openai_style(wav, cfg, "https://api.openai.com/v1/audio/transcriptions",
+                                               cfg["openai_api_key"].strip(),
+                                               cfg.get("openai_model", "").strip() or "gpt-4o-transcribe"))
+    else:
+        raise EngineError("মিটিং নোটের জন্য Settings এ Gemini (ফ্রি) বা Groq key দাও")
+    return [[0.0, label, t]] if t else []
+
+
+NOTES_HEADINGS = {
+    "bn": ["সারসংক্ষেপ", "মূল পয়েন্ট", "সিদ্ধান্ত", "করণীয়", "প্রশ্ন ও পরবর্তী ধাপ"],
+    "en": ["Summary", "Key points", "Decisions", "Action items", "Open questions & next steps"],
+}
+
+
+def _summary_prompt(lang):
+    if lang == "en":
+        rule = "Write the notes in English."
+        h = NOTES_HEADINGS["en"]
+    elif lang == "bn":
+        rule = "Write the notes in Bangla (keep English technical terms, product names and numbers as they are)."
+        h = NOTES_HEADINGS["bn"]
+    else:
+        rule = ("Write the notes in the main language of the meeting: if it is mostly Bangla or Bangla-English mix, "
+                "write in Bangla (keep English terms in English); otherwise in that language. "
+                "Translate the headings into that language too.")
+        h = NOTES_HEADINGS["bn"]
+    return "\n".join([
+        "You are an expert meeting assistant. Turn the meeting transcript into clear, well-organised notes in Markdown.",
+        "Be faithful: never invent facts, names, numbers, dates or decisions. If something is unclear, say so briefly.",
+        f"'{ME_LABEL}' is the person who recorded the meeting (the user). 'Speaker 1', 'Speaker 2', ... are the other "
+        "participants, labelled by voice; use real names only when the conversation reveals them.",
+        rule,
+        "Use exactly this structure:",
+        "# <a short, specific title for the meeting>",
+        f"## {h[0]}",
+        "2 to 4 sentences: what the meeting was about and the outcome.",
+        f"## {h[1]}",
+        "Bullet points grouped by topic (use ### for topic names when there are several). One clear point per bullet; "
+        "keep important numbers, dates, prices and names.",
+        f"## {h[2]}",
+        "Bullets of what was decided. Write '—' if nothing was decided.",
+        f"## {h[3]}",
+        "Checklist lines: '- [ ] task — owner — due date' (leave out owner or date when unknown). '—' if none.",
+        f"## {h[4]}",
+        "Unresolved questions, risks and follow-ups. '—' if none.",
+    ])
+
+
+def summarize_meeting(transcript, cfg, lang="auto"):
+    system = _summary_prompt(lang)
+    user = "Meeting transcript:\n\n" + transcript
+    if cfg.get("gemini_api_key", "").strip():
+        try:
+            return _gemini_generate(cfg, [{"text": user}], system, 240).strip()
+        except (QuotaError, EngineError) as e:
+            log(f"summary: gemini failed ({str(e)[:120]})")
+            if not cfg.get("groq_api_key", "").strip() and not cfg.get("openai_api_key", "").strip():
+                raise
+    for key_name, url, model in (
+            ("groq_api_key", "https://api.groq.com/openai/v1/chat/completions",
+             cfg.get("groq_chat_model") or "llama-3.3-70b-versatile"),
+            ("openai_api_key", "https://api.openai.com/v1/chat/completions",
+             cfg.get("openai_chat_model") or "gpt-4o-mini")):
+        key = cfg.get(key_name, "").strip()
+        if not key:
+            continue
+        r = SESSION.post(url, timeout=240, headers={"Authorization": f"Bearer {key}"},
+                         json={"model": model, "temperature": 0.2,
+                               "messages": [{"role": "system", "content": system}, {"role": "user", "content": user[-400000:]}]})
+        if r.status_code == 200:
+            return r.json()["choices"][0]["message"]["content"].strip()
+        log(f"summary via {model} failed: {api_error(r)}")
+    raise EngineError("সারাংশ বানানো যায়নি, পরে 'আবার সারাংশ বানাও' চাপো")
+
+
+def place_segments(segments, levels):
+    """Give each transcribed segment a time inside its piece. Gemini's own timestamps are unreliable, so
+    the text is spread over the moments where this track actually has speech (by text length)."""
+    if not segments:
+        return []
+    thr = 0.006
+    speech = [i for i, lv in enumerate(levels) if lv >= thr] or list(range(len(levels))) or [0]
+    total = sum(max(1, len(t)) for _, _, t in segments)
+    out, done = [], 0
+    for _, sp, text in segments:
+        k = min(len(speech) - 1, int(done / total * len(speech)))
+        out.append([speech[k] * BLOCK / SR, sp, text])
+        done += max(1, len(text))
+    return out
+
+
+def wait_for_gemini(max_wait=90, stop=None):
+    """If every Gemini model is cooling down after a rate limit, wait (up to max_wait s) for the first one."""
+    if not _model_blocked:
+        return
+    soonest = min(_model_blocked.values()) - time.monotonic()
+    if soonest > 0:
+        delay = min(soonest + 1, max_wait)
+        if stop is not None:
+            stop.wait(delay)
+        else:
+            time.sleep(delay)
+
+
+class MeetingStore:
+    @staticmethod
+    def list():
+        out = []
+        try:
+            for name in os.listdir(MEET_DIR):
+                meta = MeetingStore.load(name)
+                if meta:
+                    out.append(meta)
+        except OSError:
+            pass
+        return sorted(out, key=lambda m: m.get("started", ""), reverse=True)
+
+    @staticmethod
+    def folder(mid):
+        return os.path.join(MEET_DIR, mid)
+
+    @staticmethod
+    def load(mid):
+        try:
+            with open(os.path.join(MEET_DIR, mid, "meta.json"), "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return None
+
+    @staticmethod
+    def save(meta):
+        p = os.path.join(MEET_DIR, meta["id"], "meta.json")
+        tmp = p + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(meta, f, ensure_ascii=False, indent=1)
+        os.replace(tmp, p)
+
+    @staticmethod
+    def read_text(mid, name):
+        try:
+            with open(os.path.join(MEET_DIR, mid, name), "r", encoding="utf-8") as f:
+                return f.read()
+        except OSError:
+            return ""
+
+    @staticmethod
+    def write_text(mid, name, text):
+        with open(os.path.join(MEET_DIR, mid, name), "w", encoding="utf-8") as f:
+            f.write(text)
+
+    @staticmethod
+    def delete(mid):
+        import shutil
+        p = os.path.abspath(os.path.join(MEET_DIR, mid))
+        if os.path.dirname(p) == os.path.abspath(MEET_DIR):
+            shutil.rmtree(p, ignore_errors=True)
+
+
+def build_transcript(meta):
+    out = []
+    for c in meta.get("chunks", []):
+        if c.get("segments"):
+            for t, sp, text in c["segments"]:
+                out.append(f"[{_fmt_clock(t)}] {sp}: {text}")
+        elif c.get("text"):
+            out.append(f"[{_fmt_clock(c['a'] / SR)}] {c['text']}")
+        elif c.get("status") == "failed":
+            out.append(f"[{_fmt_clock(c['a'] / SR)}] (এই অংশ এখনো লেখা হয়নি: {c.get('error', '')[:80]})")
+    return "\n".join(out)
+
+
+class MeetingSession:
+    """Runs one meeting: recording + background transcription + final summary.
+    With `mid` it re-processes an existing (interrupted or partly failed) meeting from its saved audio."""
+
+    def __init__(self, app, label="", auto_key=None, mid=None):
+        self.app, self.cfg = app, dict(app.cfg)
+        self.auto_key = auto_key
+        self.stop_evt = threading.Event()
+        self.recorder = None
+        if mid:
+            self.meta = MeetingStore.load(mid)
+            self.folder = MeetingStore.folder(mid)
+            self.meta["status"] = "processing"
+        else:
+            started = datetime.now()
+            mid = started.strftime("%Y-%m-%d_%H%M%S")
+            self.folder = MeetingStore.folder(mid)
+            os.makedirs(self.folder, exist_ok=True)
+            self.meta = {"id": mid, "title": label and f"{label} মিটিং" or "মিটিং নোট",
+                         "app": label, "started": started.strftime("%Y-%m-%d %H:%M"), "duration": 0,
+                         "status": "recording", "processed": 0, "chunks": [], "lang": self.cfg.get("notes_language", "auto")}
+            MeetingStore.save(self.meta)
+            self.recorder = MeetingRecorder(self.folder, self.cfg.get("mic", ""))
+            self.recorder.start()
+        self.id = self.meta["id"]
+        threading.Thread(target=self._work, daemon=True).start()
+
+    @property
+    def recording(self):
+        return self.recorder is not None and self.recorder.running
+
+    def elapsed(self):
+        return self.recorder.elapsed() if self.recorder else self.meta.get("duration", 0)
+
+    def stop(self):
+        if self.recorder and self.recorder.running:
+            self.recorder.stop()
+            self.meta["duration"] = int(self.recorder.elapsed())
+        self.stop_evt.set()
+
+    def abort(self):
+        """App is quitting: stop recording, leave the audio so the meeting can be processed next time."""
+        if self.recorder and self.recorder.running:
+            self.recorder.stop()
+            self.meta["duration"] = int(self.recorder.elapsed())
+        self.meta["status"] = "interrupted"
+        try:
+            MeetingStore.save(self.meta)
+        except Exception:
+            pass
+
+    def _event(self, *msg):
+        self.app.ui_q.put(msg)
+
+    def _total_samples(self):
+        if self.recorder:
+            return self.recorder.available()
+        sizes = []
+        for k in ("mic", "sys"):
+            try:
+                sizes.append(os.path.getsize(os.path.join(self.folder, f"{k}.pcm")) // 2)
+            except OSError:
+                pass
+        return max(sizes) if sizes else 0
+
+    def _cut_point(self, a, b):
+        """End the piece in the quietest 100 ms of its last 8 seconds, so words are not cut in half."""
+        win = min(8 * SR, b - a)
+        levels = _block_levels(mix_tracks(self.folder, b - win, b))
+        if not levels:
+            return b
+        i = min(range(len(levels)), key=lambda k: levels[k])
+        return b - win + (i + 1) * BLOCK
+
+    def _process(self, a, b):
+        mine, others = split_tracks(self.folder, a, b)
+        chunk = {"a": a, "b": b, "segments": []}
+        context = build_transcript(self.meta)[-600:]
+        errors = []
+        for who, raw in (("others", others), ("me", mine)):
+            levels = _block_levels(raw)
+            if not levels or max(levels) < 0.006:
+                continue
+            try:
+                segs = place_segments(transcribe_meeting_track(raw, self.cfg, who, context), levels)
+                for t, sp, text in segs:
+                    chunk["segments"].append([a / SR + t, sp, text])
+            except Exception as e:
+                log(f"meeting piece {a // SR}s ({who}) failed: {e!r}")
+                errors.append(str(e)[:200])
+        chunk["segments"].sort(key=lambda x: x[0])
+        if errors and not chunk["segments"]:
+            chunk["status"], chunk["error"] = "failed", errors[0]
+        elif errors:
+            chunk["status"], chunk["error"] = "failed", errors[0]   # keep what we got, retry the rest later
+        else:
+            chunk["status"] = "done" if chunk["segments"] else "silent"
+        return chunk
+
+    def _save_progress(self):
+        MeetingStore.write_text(self.id, "transcript.md", build_transcript(self.meta))
+        MeetingStore.save(self.meta)
+        self._event("meeting_update", self.id)
+
+    def _work(self):
+        try:
+            step = MEET_CHUNK_S * SR
+            pos = self.meta.get("processed", 0)
+            # 1. while recording: transcribe every finished 2-minute piece
+            while self.recording:
+                if self.recorder.elapsed() > MEET_MAX_HOURS * 3600:
+                    self._event("meeting_stop_request",)
+                if self._total_samples() - pos >= step + 8 * SR:
+                    cut = self._cut_point(pos, pos + step)
+                    self.meta["chunks"].append(self._process(pos, cut))
+                    pos = self.meta["processed"] = cut
+                    self.meta["duration"] = int(self.recorder.elapsed())
+                    self._save_progress()
+                else:
+                    self.stop_evt.wait(2)
+            # 2. after the meeting: the rest, then retry failed pieces once
+            self.meta["status"] = "processing"
+            self._save_progress()
+            total = self._total_samples()
+            while total - pos > SR:
+                end = total if total - pos <= step + 30 * SR else self._cut_point(pos, pos + step)
+                self.meta["chunks"].append(self._process(pos, end))
+                pos = self.meta["processed"] = end
+                self._save_progress()
+            for attempt in range(3):                       # free-tier limits are per minute: wait, then retry
+                failed = [i for i, c in enumerate(self.meta["chunks"]) if c.get("status") == "failed"]
+                if not failed:
+                    break
+                wait_for_gemini(90)
+                for i in failed:
+                    c = self.meta["chunks"][i]
+                    self.meta["chunks"][i] = self._process(c["a"], c["b"])
+                    self._save_progress()
+            self.meta["duration"] = max(self.meta.get("duration", 0), int(total / SR))
+            # 3. summary
+            transcript = build_transcript(self.meta)
+            spoken = [c for c in self.meta["chunks"] if c.get("segments") or c.get("text")]
+            if not spoken:
+                self.meta["status"] = "empty" if not any(c.get("status") == "failed" for c in self.meta["chunks"]) else "failed"
+                MeetingStore.write_text(self.id, "notes.md", "")
+            else:
+                try:
+                    try:
+                        notes = summarize_meeting(transcript, self.cfg, self.meta.get("lang", "auto"))
+                    except (QuotaError, EngineError):
+                        wait_for_gemini(90)
+                        notes = summarize_meeting(transcript, self.cfg, self.meta.get("lang", "auto"))
+                    MeetingStore.write_text(self.id, "notes.md", notes)
+                    first = notes.strip().splitlines()[0] if notes.strip() else ""
+                    if first.startswith("#"):
+                        self.meta["title"] = first.lstrip("#").strip()[:90] or self.meta["title"]
+                    failed = any(c.get("status") == "failed" for c in self.meta["chunks"])
+                    self.meta["status"] = "partial" if failed else "done"
+                except Exception as e:
+                    log(f"meeting summary failed: {e!r}")
+                    self.meta["status"], self.meta["error"] = "summary_failed", str(e)[:200]
+            # 4. tidy up the raw audio
+            if self.meta["status"] in ("done", "empty"):
+                self._cleanup_audio(total)
+            self._save_progress()
+            self._event("meeting_done", self.id)
+        except Exception as e:
+            log(f"meeting worker crashed: {e!r}")
+            self.meta["status"], self.meta["error"] = "failed", str(e)[:200]
+            try:
+                self._save_progress()
+            except Exception:
+                pass
+            self._event("meeting_done", self.id)
+
+    def _cleanup_audio(self, total):
+        if self.cfg.get("keep_meeting_audio"):
+            try:
+                with wave.open(os.path.join(self.folder, "meeting.wav"), "wb") as w:
+                    w.setnchannels(1)
+                    w.setsampwidth(2)
+                    w.setframerate(SR)
+                    step = 60 * SR
+                    for a in range(0, total, step):
+                        w.writeframes(mix_tracks(self.folder, a, min(total, a + step)))
+            except Exception as e:
+                log(f"save meeting.wav failed: {e!r}")
+                return
+        for k in ("mic", "sys"):
+            try:
+                os.remove(os.path.join(self.folder, f"{k}.pcm"))
+            except OSError:
+                pass
+
+
+def resummarize(mid, cfg):
+    meta = MeetingStore.load(mid)
+    notes = summarize_meeting(build_transcript(meta), cfg, meta.get("lang", "auto"))
+    MeetingStore.write_text(mid, "notes.md", notes)
+    first = notes.strip().splitlines()[0] if notes.strip() else ""
+    if first.startswith("#"):
+        meta["title"] = first.lstrip("#").strip()[:90] or meta["title"]
+    if meta.get("status") == "summary_failed":
+        meta["status"] = "done"
+    MeetingStore.save(meta)
+    return notes
+
+
+class MeetingDetector(threading.Thread):
+    """Notices when a call app (Zoom, Teams, a browser with Google Meet, ...) keeps the microphone open."""
+    POLL, MIN_ON, MIN_OFF = 3.0, 8.0, 20.0
+
+    def __init__(self, app):
+        super().__init__(daemon=True)
+        self.app = app
+        self.current = {}          # key -> label, apps holding the mic right now
+        self.first_seen, self.gone_since = {}, {}
+        self.announced = set()
+        self.self_exe = os.path.abspath(sys.executable).lower()
+
+    def run(self):
+        while True:
+            time.sleep(self.POLL)
+            cfg = self.app.cfg
+            if not cfg.get("notes_enabled", True):
+                continue
+            try:
+                found = dict(plat.active_meetings(self.self_exe))
+            except Exception as e:
+                log(f"meeting detection: {e!r}")
+                continue
+            now = time.monotonic()
+            self.current = found
+            for key, label in found.items():
+                self.gone_since.pop(key, None)
+                self.first_seen.setdefault(key, now)
+                if key not in self.announced and now - self.first_seen[key] >= self.MIN_ON:
+                    self.announced.add(key)
+                    self.app.ui_q.put(("meeting_detected", label, key))
+            for key in list(self.first_seen):
+                if key in found:
+                    continue
+                self.gone_since.setdefault(key, now)
+                if now - self.gone_since[key] >= self.MIN_OFF:
+                    self.first_seen.pop(key, None)
+                    self.gone_since.pop(key, None)
+                    if key in self.announced:
+                        self.announced.discard(key)
+                        self.app.ui_q.put(("meeting_ended", key))
+
+
+# --------------------------------------------------------------------------
 # Overlay pill
 # --------------------------------------------------------------------------
 class Overlay:
@@ -1349,6 +2077,332 @@ class Overlay:
 
 
 # --------------------------------------------------------------------------
+# Floating side button, small pop-up cards, Markdown view (meeting notes UI)
+# --------------------------------------------------------------------------
+def _round_rect(cv, x1, y1, x2, y2, r, **kw):
+    pts = [x1 + r, y1, x2 - r, y1, x2, y1, x2, y1 + r, x2, y2 - r, x2, y2,
+           x2 - r, y2, x1 + r, y2, x1, y2, x1, y2 - r, x1, y1 + r, x1, y1]
+    return cv.create_polygon(pts, smooth=True, **kw)
+
+
+def _load_logo(size):
+    try:
+        img = tk.PhotoImage(file=resource("assets/kotha.png"))
+        f = max(1, round(max(img.width(), img.height()) / size))
+        return img.subsample(f, f) if f > 1 else img
+    except Exception:
+        return None
+
+
+class FloatBar:
+    """Wispr-style floating button on the left edge of the screen. Hover shows the shortcuts and a
+    button to start/stop meeting notes. Drag it up or down to move it."""
+    KEY = "#010203"
+
+    def __init__(self, app):
+        self.app, self.root, s = app, app.root, app.scale
+        self.s = s
+        self.small = int(46 * s)
+        self.big_w, self.big_h = int(320 * s), int(196 * s)
+        self.win = tk.Toplevel(self.root)
+        self.win.overrideredirect(True)
+        self.win.attributes("-topmost", True)
+        self.win.configure(bg=self.KEY)
+        self.win.attributes("-transparentcolor", self.KEY)
+        self.cv = tk.Canvas(self.win, bg=self.KEY, highlightthickness=0, width=self.small, height=self.small)
+        self.cv.pack(fill="both", expand=True)
+        self.logo_small = _load_logo(int(28 * s))
+        self.logo_big = _load_logo(int(26 * s))
+        self.expanded = False
+        self.enter_t = None
+        self.last_inside = 0.0
+        self.drag_from = None
+        self.dragged = False
+        self.tick_n = 0
+        self.cv.bind("<ButtonPress-1>", self._press)
+        self.cv.bind("<B1-Motion>", self._motion)
+        self.cv.bind("<ButtonRelease-1>", self._release)
+        self.place()
+        make_no_activate(self.win, click_through=False)
+        self.draw()
+        self._tick()
+
+    # ---- geometry ----
+    def _pos(self):
+        l, t, r, b = work_area(self.root)
+        frac = min(0.9, max(0.05, float(self.app.cfg.get("float_y", 0.42))))
+        y = int(t + frac * (b - t) - self.small / 2)
+        return l + int(4 * self.s), y, t, b
+
+    def place(self):
+        x, y, t, b = self._pos()
+        if self.expanded:
+            y = max(t + 4, min(y, b - self.big_h - 4))
+            self.win.geometry(f"{self.big_w}x{self.big_h}+{x}+{y}")
+            self.cv.config(width=self.big_w, height=self.big_h)
+        else:
+            self.win.geometry(f"{self.small}x{self.small}+{x}+{y}")
+            self.cv.config(width=self.small, height=self.small)
+        self.win.attributes("-topmost", True)
+
+    def anchor(self):
+        """Screen point next to the button, for pop-up cards."""
+        x, y, t, b = self._pos()
+        return x + self.small + int(10 * self.s), y
+
+    def destroy(self):
+        try:
+            self.win.destroy()
+        except Exception:
+            pass
+
+    # ---- mouse ----
+    def _press(self, e):
+        self.drag_from = (e.y_root, self.win.winfo_y())
+        self.dragged = False
+
+    def _motion(self, e):
+        if self.expanded or not self.drag_from:
+            return
+        dy = e.y_root - self.drag_from[0]
+        if abs(dy) > 4:
+            self.dragged = True
+        if self.dragged:
+            l, t, r, b = work_area(self.root)
+            y = self.drag_from[1] + dy
+            self.app.cfg["float_y"] = min(0.9, max(0.05, (y + self.small / 2 - t) / max(1, b - t)))
+            self.place()
+
+    def _release(self, e):
+        if self.dragged:
+            self.dragged = False
+            self.drag_from = None
+            try:
+                self.app.cfg.save()
+            except Exception:
+                pass
+            return
+        self.drag_from = None
+        if not self.expanded:
+            self.expanded = True
+            self.last_inside = time.monotonic()
+            self.place()
+            self.draw()
+
+    def _hit(self, tag):
+        def go(_e=None):
+            if tag == "btn":
+                self.app.toggle_meeting()
+            elif tag == "notes":
+                self.app.open_notes()
+            elif tag == "settings":
+                self.app.open_settings()
+            self.draw()
+        return go
+
+    # ---- drawing ----
+    def _state(self):
+        m = self.app.meeting
+        if m and m.recording:
+            return "rec"
+        if m:
+            return "busy"
+        return "idle"
+
+    def draw(self):
+        cv, s = self.cv, self.s
+        cv.delete("all")
+        state = self._state()
+        if not self.expanded:
+            n = self.small
+            ring = "#F42A41" if state == "rec" else ("#ffab4a" if state == "busy" else "#2a3138")
+            width = int(3 * s) if state != "idle" else 1
+            if state == "rec" and (self.tick_n // 4) % 2:
+                ring = "#a01c2b"
+            cv.create_oval(2, 2, n - 2, n - 2, fill="#14181c", outline=ring, width=width)
+            if self.logo_small:
+                cv.create_image(n // 2, n // 2, image=self.logo_small)
+            if state == "rec":
+                r = int(5 * s)
+                cv.create_oval(n - 2 * r - 2, 2, n - 2, 2 * r + 2, fill="#F42A41", outline="#14181c", width=2)
+            return
+        w, h = self.big_w, self.big_h
+        _round_rect(cv, 1, 1, w - 1, h - 1, int(18 * s), fill="#14181c", outline="#2a3138")
+        x0 = int(16 * s)
+        if self.logo_big:
+            cv.create_image(x0 + int(13 * s), int(24 * s), image=self.logo_big)
+        cv.create_text(x0 + int(32 * s), int(24 * s), text=f"Kotha  {APP_BN}", anchor="w", fill="#ffffff",
+                       font=(FONT, 11, "bold"))
+        cv.create_text(w - x0, int(24 * s), text=f"v{VERSION}", anchor="e", fill="#6f7b86", font=(FONT, 8))
+
+        def row(y, label, keys):
+            cv.create_text(x0, y, text=label, anchor="w", fill="#d6dde3", font=(FONT, 10))
+            t = cv.create_text(w - x0 - int(8 * s), y, text=keys, anchor="e", fill="#ffffff", font=(FONT, 9, "bold"))
+            bx1, by1, bx2, by2 = cv.bbox(t)
+            _round_rect(cv, bx1 - int(8 * s), by1 - int(3 * s), bx2 + int(8 * s), by2 + int(3 * s), int(8 * s),
+                        fill="#26303a", outline="")
+            cv.tag_raise(t)
+
+        row(int(62 * s), "কথা বলে লিখুন (চেপে ধরে)", hotkey_label(self.app.cfg["hotkey"]))
+        row(int(94 * s), "মিটিং নোট শুরু / শেষ", hotkey_label(self.app.cfg.get("note_hotkey", DEFAULT_NOTE_HOTKEY)))
+        by1, by2 = int(116 * s), int(152 * s)
+        if state == "rec":
+            fill, text = "#d93025", f"■  নোট শেষ করো   {_fmt_clock(self.app.meeting.elapsed())}"
+        elif state == "busy":
+            fill, text = "#3a4450", "নোট তৈরি হচ্ছে…  (দেখুন)"
+        else:
+            fill, text = "#0f9d58", "●  মিটিং নোট নেওয়া শুরু করো"
+        _round_rect(cv, x0, by1, w - x0, by2, int(12 * s), fill=fill, outline="", tags="btn")
+        cv.create_text(w // 2, (by1 + by2) // 2, text=text, fill="#ffffff", font=(FONT, 10, "bold"), tags="btn")
+        cv.create_text(x0, int(176 * s), text="সব নোট দেখুন", anchor="w", fill="#8ab4f8", font=(FONT, 9, "underline"),
+                       tags="notes")
+        cv.create_text(w - x0, int(176 * s), text="Settings", anchor="e", fill="#8ab4f8", font=(FONT, 9, "underline"),
+                       tags="settings")
+        for tag in ("btn", "notes", "settings"):
+            fn = self._hit(tag if not (tag == "btn" and state == "busy") else "notes")
+            cv.tag_bind(tag, "<ButtonRelease-1>", fn)
+            cv.tag_bind(tag, "<Enter>", lambda e: cv.config(cursor="hand2"))
+            cv.tag_bind(tag, "<Leave>", lambda e: cv.config(cursor=""))
+
+    def _tick(self):
+        try:
+            self.tick_n += 1
+            px, py = self.root.winfo_pointerxy()
+            x, y = self.win.winfo_x(), self.win.winfo_y()
+            w, h = self.win.winfo_width(), self.win.winfo_height()
+            inside = x <= px < x + w and y <= py < y + h
+            now = time.monotonic()
+            if inside:
+                self.last_inside = now
+                if self.enter_t is None:
+                    self.enter_t = now
+                if not self.expanded and not self.drag_from and now - self.enter_t >= 0.15:
+                    self.expanded = True
+                    self.place()
+                    self.draw()
+            else:
+                self.enter_t = None
+                if self.expanded and now - self.last_inside > 0.5:
+                    self.expanded = False
+                    self.place()
+                    self.draw()
+            if self._state() != "idle" and self.tick_n % 3 == 0:
+                self.draw()
+            if self.tick_n % 40 == 0:
+                self.win.attributes("-topmost", True)
+        except Exception as e:
+            log(f"float bar: {e!r}")
+        self.root.after(150, self._tick)
+
+
+class Card:
+    """Small clickable pop-up that never steals focus (meeting suggestion, 'notes ready')."""
+    KEY = "#010203"
+
+    def __init__(self, app, title, body, buttons, timeout=30):
+        self.app, s = app, app.scale
+        self.win = tk.Toplevel(app.root)
+        self.win.overrideredirect(True)
+        self.win.attributes("-topmost", True)
+        self.win.configure(bg=self.KEY)
+        self.win.attributes("-transparentcolor", self.KEY)
+        w = int(360 * s)
+        cv = tk.Canvas(self.win, bg=self.KEY, highlightthickness=0, width=w, height=int(200 * s))
+        cv.pack()
+        pad = int(16 * s)
+        t1 = cv.create_text(pad, pad, text=title, anchor="nw", fill="#ffffff", font=(FONT, 11, "bold"), width=w - 2 * pad)
+        y = cv.bbox(t1)[3] + int(6 * s)
+        t2 = cv.create_text(pad, y, text=body, anchor="nw", fill="#c9d1d9", font=(FONT, 9), width=w - 2 * pad)
+        y = cv.bbox(t2)[3] + int(14 * s)
+        bh = int(32 * s)
+        x = pad
+        items = []
+        for i, (label, fn) in enumerate(buttons):
+            tag = f"b{i}"
+            t = cv.create_text(0, 0, text=label, font=(FONT, 9, "bold"), fill="#ffffff", tags=tag)
+            tw = cv.bbox(t)[2] - cv.bbox(t)[0]
+            bw = tw + int(28 * s)
+            r = _round_rect(cv, x, y, x + bw, y + bh, int(10 * s), fill="#0f9d58" if i == 0 else "#2f3a44",
+                            outline="", tags=tag)
+            cv.coords(t, x + bw / 2, y + bh / 2)
+            cv.tag_raise(t)
+            cv.tag_bind(tag, "<ButtonRelease-1>", self._click(fn))
+            cv.tag_bind(tag, "<Enter>", lambda e: cv.config(cursor="hand2"))
+            cv.tag_bind(tag, "<Leave>", lambda e: cv.config(cursor=""))
+            x += bw + int(8 * s)
+            items.append(r)
+        h = y + bh + pad
+        bg = _round_rect(cv, 1, 1, w - 1, h - 1, int(16 * s), fill="#14181c", outline="#2a3138")
+        cv.tag_lower(bg)
+        cv.config(height=h)
+        l, t, r, b = work_area(app.root)
+        if app.float_bar:
+            ax, ay = app.float_bar.anchor()
+            ay = max(t + 4, min(ay, b - h - 4))
+        else:
+            ax, ay = r - w - int(20 * s), b - h - int(20 * s)
+        self.win.geometry(f"{w}x{h}+{ax}+{ay}")
+        make_no_activate(self.win, click_through=False)
+        self.job = app.root.after(int(timeout * 1000), self.close) if timeout else None
+
+    def _click(self, fn):
+        def go(_e=None):
+            self.close()
+            if fn:
+                fn()
+        return go
+
+    def close(self):
+        try:
+            if self.job:
+                self.app.root.after_cancel(self.job)
+            self.win.destroy()
+        except Exception:
+            pass
+
+    def alive(self):
+        try:
+            return bool(self.win.winfo_exists())
+        except Exception:
+            return False
+
+
+def render_markdown(txt, md):
+    """Very small Markdown view: headings, bullets and checkboxes."""
+    txt.config(state="normal")
+    txt.delete("1.0", "end")
+    for line in (md or "").splitlines():
+        s = line.rstrip()
+        tag = None
+        if s.startswith("### "):
+            s, tag = s[4:], "h3"
+        elif s.startswith("## "):
+            s, tag = s[3:], "h2"
+        elif s.startswith("# "):
+            s, tag = s[2:], "h1"
+        else:
+            st = s.lstrip()
+            ind = len(s) - len(st)
+            if st.startswith("- [ ] ") or st.startswith("* [ ] "):
+                s = " " * ind + "☐ " + st[6:]
+            elif st.startswith("- [x] ") or st.startswith("- [X] "):
+                s = " " * ind + "☑ " + st[6:]
+            elif st.startswith("- ") or st.startswith("* "):
+                s = " " * ind + "•  " + st[2:]
+        s = s.replace("**", "")
+        if tag:
+            txt.insert("end", s + "\n", tag)
+        else:
+            txt.insert("end", s + "\n")
+    txt.config(state="disabled")
+
+
+STATUS_BN = {"recording": "● রেকর্ড হচ্ছে", "processing": "লেখা হচ্ছে…", "done": "তৈরি",
+             "partial": "কিছু অংশ বাকি", "failed": "সমস্যা হয়েছে", "summary_failed": "সারাংশ বাকি",
+             "interrupted": "অসমাপ্ত", "empty": "কোনো কথা পাওয়া যায়নি"}
+
+
+# --------------------------------------------------------------------------
 # App + windows
 # --------------------------------------------------------------------------
 PROVIDERS = [
@@ -1389,6 +2443,11 @@ class App:
         self.hook = HotkeyHook(self.controller.q, self.ui_q, self.cfg["hotkey"])
         self.settings_win = self.history_win = self.popup_win = None
         self.capture_cb = None
+        self.meeting = None            # running MeetingSession
+        self.detector = None
+        self.float_bar = None
+        self.card = None
+        self.notes_win = None
 
     # ---- tray ----
     def start_tray(self):
@@ -1398,6 +2457,12 @@ class App:
             pystray.MenuItem("Settings", lambda: self.ui_q.put(("settings",)), default=True),
             pystray.MenuItem("History", lambda: self.ui_q.put(("history",))),
             pystray.MenuItem("শেষ টেক্সট আবার পেস্ট করো", lambda: self.controller.q.put(("paste_last",))),
+            pystray.Menu.SEPARATOR,
+            pystray.MenuItem(lambda _: "মিটিং নোট শেষ করো" if self.meeting and self.meeting.recording
+                             else "মিটিং নোট শুরু করো", lambda: self.ui_q.put(("note_toggle", False)),
+                             visible=lambda _: MEETING_SUPPORTED and self.cfg.get("notes_enabled", True)),
+            pystray.MenuItem("মিটিং নোটগুলো", lambda: self.ui_q.put(("notes",)),
+                             visible=lambda _: MEETING_SUPPORTED),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("বন্ধ করো (Quit)", lambda: self.ui_q.put(("quit",))),
         )
@@ -1424,20 +2489,361 @@ class App:
                 elif kind == "captured":
                     if self.capture_cb:
                         self.capture_cb(msg[1])
+                elif kind == "note_toggle":
+                    if msg[1]:
+                        send_mask_key()
+                    self.toggle_meeting()
+                elif kind == "notes":
+                    self.open_notes()
+                elif kind == "meeting_detected":
+                    self.on_meeting_detected(msg[1], msg[2])
+                elif kind == "meeting_ended":
+                    self.on_meeting_ended(msg[1])
+                elif kind == "meeting_update":
+                    self.refresh_meeting_ui(msg[1])
+                elif kind == "meeting_done":
+                    self.on_meeting_done(msg[1])
+                elif kind == "meeting_stop_request":
+                    self.stop_meeting()
                 elif kind == "quit":
                     self.quit()
-                    return
         except queue.Empty:
             pass
         self.root.after(25, self.pump)
 
     def quit(self):
+        if self.meeting and self.meeting.recording:
+            if not messagebox.askyesno(APP, "মিটিং নোট নেওয়া চলছে। এখন বন্ধ করলে রেকর্ডিং থেমে যাবে; "
+                                            "পরে 'মিটিং নোটগুলো' থেকে প্রসেস করা যাবে। বন্ধ করবো?"):
+                return
+            self.meeting.abort()
         try:
             self.tray.stop()
         except Exception:
             pass
         self.root.destroy()
         os._exit(0)
+
+    # ---- meeting notes ----
+    def notes_keys_ready(self):
+        c = self.cfg
+        return bool(c.get("gemini_api_key", "").strip() or c.get("groq_api_key", "").strip()
+                    or c.get("openai_api_key", "").strip() or (c["provider"] == "local" and LOCAL_AVAILABLE))
+
+    def toggle_meeting(self):
+        if self.meeting and self.meeting.recording:
+            self.stop_meeting()
+        else:
+            self.start_meeting()
+
+    def start_meeting(self, label="", auto_key=None):
+        if not MEETING_SUPPORTED or not self.cfg.get("notes_enabled", True):
+            return
+        if self.meeting and self.meeting.recording:
+            return
+        if self.meeting:
+            self.overlay.show("note", "আগের মিটিংয়ের নোট এখনো তৈরি হচ্ছে, একটু পরে আবার চেষ্টা করো")
+            return
+        if not self.notes_keys_ready():
+            self.overlay.show("error", "আগে Settings এ ফ্রি Gemini key দাও")
+            self.open_settings()
+            return
+        if not label and self.detector and self.detector.current:
+            label = auto_key = next(iter(self.detector.current))
+        try:
+            self.meeting = MeetingSession(self, label, auto_key)
+        except Exception as e:
+            log(f"meeting start failed: {e!r}")
+            self.meeting = None
+            self.overlay.show("error", "মিটিং রেকর্ড শুরু করা যায়নি")
+            return
+        if self.card and self.card.alive():
+            self.card.close()
+        self.overlay.show("note", "মিটিং নোট নেওয়া শুরু হয়েছে")
+        self.refresh_meeting_ui()
+
+    def stop_meeting(self):
+        if self.meeting and self.meeting.recording:
+            self.meeting.stop()
+            self.overlay.show("note", "মিটিং শেষ। নোট আর সারাংশ তৈরি হচ্ছে…")
+            self.refresh_meeting_ui()
+
+    def refresh_meeting_ui(self, mid=None):
+        if self.float_bar:
+            self.float_bar.draw()
+        if self.notes_win and self.notes_win.winfo_exists():
+            self._notes_reload(keep=True, live_mid=mid)
+
+    def on_meeting_detected(self, label, key):
+        mode = self.cfg.get("meeting_detect", "ask")
+        if not self.cfg.get("notes_enabled", True) or mode == "off" or (self.meeting and self.meeting.recording):
+            return
+        if mode == "auto":
+            self.start_meeting(label, key)
+            return
+        if self.card and self.card.alive():
+            self.card.close()
+        self.card = Card(self, f"{label} এ মিটিং চলছে মনে হচ্ছে",
+                         "নোট নেবো? আপনার আর অন্যদের সবার কথা লিখে রাখবে, শেষে মূল পয়েন্টসহ সারাংশ বানিয়ে দেবে। "
+                         "রেকর্ড করার আগে সবাইকে জানিয়ে রাখুন।",
+                         [("হ্যাঁ, নোট নাও", lambda: self.start_meeting(label, key)), ("এখন না", None)], timeout=45)
+        self.card_key = key
+
+    def on_meeting_ended(self, key):
+        if self.card and self.card.alive() and getattr(self, "card_key", None) == key:
+            self.card.close()
+        m = self.meeting
+        if m and m.recording and m.auto_key == key and self.cfg.get("meeting_autostop", True):
+            self.stop_meeting()
+
+    def on_meeting_done(self, mid):
+        if self.meeting and self.meeting.id == mid and not self.meeting.recording:
+            self.meeting = None
+        meta = MeetingStore.load(mid) or {}
+        self.refresh_meeting_ui()
+        st = meta.get("status")
+        if st == "empty":
+            self.overlay.show("note", "মিটিংয়ে কোনো কথা পাওয়া যায়নি")
+            return
+        title = "মিটিং নোট তৈরি হয়েছে ✓" if st in ("done", "partial") else "মিটিং নোটে সমস্যা হয়েছে"
+        body = meta.get("title", "") if st in ("done", "partial") else (meta.get("error") or "বিস্তারিত দেখতে খুলুন")
+        if self.card and self.card.alive():
+            self.card.close()
+        self.card = Card(self, title, body, [("খুলুন", lambda: self.open_notes(mid)), ("বন্ধ", None)], timeout=60)
+
+    def open_notes(self, select=None):
+        if self.notes_win and self.notes_win.winfo_exists():
+            self.notes_win.lift()
+            self.notes_win.focus_force()
+            plat.bring_to_front()
+            self._notes_reload(keep=select is None, select=select)
+            return
+        s = self.scale
+        w = tk.Toplevel(self.root)
+        self.notes_win = w
+        w.title(f"{APP} - মিটিং নোট")
+        w.geometry(f"{int(980 * s)}x{int(640 * s)}")
+        top = ttk.Frame(w, padding=(12, 10, 12, 4))
+        top.pack(fill="x")
+        self.n_status = ttk.Label(top, text="", style="Title.TLabel")
+        self.n_status.pack(side="left")
+        self.n_btn = ttk.Button(top, text="", command=self.toggle_meeting)
+        self.n_btn.pack(side="right")
+        ttk.Label(top, text=f"শর্টকাট: {hotkey_label(self.cfg.get('note_hotkey', DEFAULT_NOTE_HOTKEY))}   ",
+                  style="Hint.TLabel").pack(side="right")
+        pan = ttk.PanedWindow(w, orient="horizontal")
+        pan.pack(fill="both", expand=True, padx=12, pady=(4, 0))
+        left = ttk.Frame(pan)
+        self.n_list = tk.Listbox(left, font=(FONT, 10), activestyle="none", width=34, exportselection=False)
+        self.n_list.pack(fill="both", expand=True)
+        right = ttk.Frame(pan, padding=(10, 0, 0, 0))
+        pan.add(left, weight=1)
+        pan.add(right, weight=3)
+        self.n_title = ttk.Label(right, text="", font=(FONT, 14, "bold"), wraplength=int(620 * s), justify="left")
+        self.n_title.pack(anchor="w")
+        self.n_info = ttk.Label(right, text="", style="Hint.TLabel")
+        self.n_info.pack(anchor="w", pady=(2, 6))
+        nb = ttk.Notebook(right)
+        nb.pack(fill="both", expand=True)
+        self.n_text, self.n_trans = [], []
+        for title in ("নোট ও সারাংশ", "পুরো ট্রান্সক্রিপ্ট"):
+            f = ttk.Frame(nb)
+            t = tk.Text(f, wrap="word", font=(FONT, 11), relief="flat", padx=12, pady=10, state="disabled")
+            sb = ttk.Scrollbar(f, command=t.yview)
+            t.configure(yscrollcommand=sb.set)
+            sb.pack(side="right", fill="y")
+            t.pack(fill="both", expand=True)
+            t.tag_configure("h1", font=(FONT, 16, "bold"), spacing3=6)
+            t.tag_configure("h2", font=(FONT, 12, "bold"), foreground="#006A4E", spacing1=10, spacing3=4)
+            t.tag_configure("h3", font=(FONT, 11, "bold"), spacing1=6)
+            nb.add(f, text=title)
+            (self.n_text if not self.n_text else self.n_trans).append(t)
+        self.n_text, self.n_trans = self.n_text[0], self.n_trans[0]
+        bar = ttk.Frame(w, padding=(12, 8))
+        bar.pack(fill="x", side="bottom", before=pan)
+        self.n_retry = ttk.Button(bar, text="বাকি অংশ আবার প্রসেস করো", command=self._notes_retry)
+        ttk.Button(bar, text="নোট কপি করো", command=lambda: self._notes_copy("notes.md")).pack(side="left")
+        ttk.Button(bar, text="ট্রান্সক্রিপ্ট কপি", command=lambda: self._notes_copy("transcript.md")).pack(side="left", padx=6)
+        ttk.Button(bar, text="Markdown সেভ", command=self._notes_export).pack(side="left")
+        ttk.Button(bar, text="আবার সারাংশ বানাও", command=self._notes_resummarize).pack(side="left", padx=6)
+        ttk.Button(bar, text="ফোল্ডার খোলো", command=self._notes_folder).pack(side="left")
+        ttk.Button(bar, text="মুছে ফেলো", command=self._notes_delete).pack(side="right")
+        self.n_ids = []
+        self.n_list.bind("<<ListboxSelect>>", lambda e: self._notes_show())
+        self._notes_reload(select=select)
+        self._notes_tick()
+        w.lift()
+        w.focus_force()
+        plat.bring_to_front()
+
+    def _notes_sel(self):
+        sel = self.n_list.curselection()
+        return self.n_ids[sel[0]] if sel and sel[0] < len(self.n_ids) else None
+
+    def _notes_reload(self, keep=True, select=None, live_mid=None):
+        cur = select or (self._notes_sel() if keep else None)
+        metas = MeetingStore.list()
+        self.n_ids = [m["id"] for m in metas]
+        self.n_list.delete(0, "end")
+        for m in metas:
+            st = STATUS_BN.get(m.get("status"), "")
+            if self.meeting and self.meeting.id == m["id"] and self.meeting.recording:
+                st = STATUS_BN["recording"]
+            self.n_list.insert("end", f" {m.get('started', '')[5:]}  {m.get('title', '')[:30]}  · {st}")
+        if not metas:
+            self.n_title.config(text="এখনো কোনো মিটিং নোট নেই")
+            self.n_info.config(text=f"মিটিং শুরু হলে Kotha নিজে থেকে জিজ্ঞেস করবে, বা উপরের বাটন / "
+                                    f"{hotkey_label(self.cfg.get('note_hotkey', DEFAULT_NOTE_HOTKEY))} চাপুন।")
+            render_markdown(self.n_text, "")
+            render_markdown(self.n_trans, "")
+            return
+        idx = self.n_ids.index(cur) if cur in self.n_ids else 0
+        self.n_list.selection_clear(0, "end")
+        self.n_list.selection_set(idx)
+        self.n_list.see(idx)
+        if live_mid is None or live_mid == self.n_ids[idx]:
+            self._notes_show()
+
+    def _notes_show(self):
+        mid = self._notes_sel()
+        if not mid:
+            return
+        meta = MeetingStore.load(mid) or {}
+        live = self.meeting and self.meeting.id == mid
+        st = STATUS_BN.get(meta.get("status"), "")
+        if live and self.meeting.recording:
+            st = STATUS_BN["recording"]
+        dur = _fmt_clock(self.meeting.elapsed() if live else meta.get("duration", 0))
+        self.n_title.config(text=meta.get("title", ""))
+        info = f"{meta.get('started', '')}  ·  {dur}  ·  {meta.get('app') or 'মিটিং'}  ·  {st}"
+        if meta.get("error") and meta.get("status") in ("failed", "summary_failed", "partial"):
+            info += f"  ·  {meta['error'][:80]}"
+        self.n_info.config(text=info)
+        notes = MeetingStore.read_text(mid, "notes.md")
+        if not notes:
+            notes = ("# নোট তৈরি হচ্ছে…\n\nমিটিং চলাকালীন প্রতি ২ মিনিটে কথাগুলো লেখা হচ্ছে (পাশের ট্যাবে দেখুন)। "
+                     "মিটিং শেষ করলে এখানে সারাংশ, মূল পয়েন্ট, সিদ্ধান্ত আর করণীয় আসবে।") if live else ""
+        render_markdown(self.n_text, notes)
+        y = self.n_trans.yview()[1]
+        render_markdown(self.n_trans, MeetingStore.read_text(mid, "transcript.md") or
+                        ("(প্রথম ২ মিনিট পর থেকে লেখা দেখা যাবে)" if live else ""))
+        if live and y > 0.95:
+            self.n_trans.see("end")
+        can_retry = not self.meeting and meta.get("status") in ("interrupted", "partial", "failed", "summary_failed")
+        if can_retry:
+            self.n_retry.pack(side="left", padx=6)
+        else:
+            self.n_retry.pack_forget()
+
+    def _notes_tick(self):
+        if not (self.notes_win and self.notes_win.winfo_exists()):
+            return
+        m = self.meeting
+        if m and m.recording:
+            self.n_status.config(text=f"● মিটিং নোট নেওয়া হচ্ছে   {_fmt_clock(m.elapsed())}", foreground="#d93025")
+            self.n_btn.config(text="নোট শেষ করো")
+        elif m:
+            self.n_status.config(text="নোট আর সারাংশ তৈরি হচ্ছে…", foreground="#b06000")
+            self.n_btn.config(text="নোট শেষ করো", state="disabled")
+        else:
+            self.n_status.config(text="মিটিং নোট", foreground="#1b1b1b")
+            self.n_btn.config(text="● নতুন মিটিং নোট শুরু", state="normal")
+        if m and m.recording:
+            self.n_btn.config(state="normal")
+        self.root.after(1000, self._notes_tick)
+
+    def _notes_copy(self, name):
+        mid = self._notes_sel()
+        if mid:
+            pyperclip.copy(MeetingStore.read_text(mid, name))
+            self.overlay.show("note", "কপি হয়েছে")
+
+    def _notes_export(self):
+        from tkinter import filedialog
+        mid = self._notes_sel()
+        if not mid:
+            return
+        meta = MeetingStore.load(mid) or {}
+        name = "".join(ch for ch in meta.get("title", "meeting") if ch not in '\\/:*?"<>|')[:60] or "meeting"
+        path = filedialog.asksaveasfilename(parent=self.notes_win, defaultextension=".md", initialfile=f"{name}.md",
+                                            filetypes=[("Markdown", "*.md"), ("Text", "*.txt")])
+        if path:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(MeetingStore.read_text(mid, "notes.md") + "\n\n---\n\n## Transcript\n\n" +
+                        MeetingStore.read_text(mid, "transcript.md"))
+
+    def _notes_folder(self):
+        mid = self._notes_sel()
+        if mid:
+            try:
+                os.startfile(MeetingStore.folder(mid))
+            except Exception:
+                webbrowser.open(MeetingStore.folder(mid))
+
+    def _notes_resummarize(self):
+        mid = self._notes_sel()
+        if not mid or (self.meeting and self.meeting.id == mid):
+            return
+        self.overlay.show("busy")
+
+        def work():
+            try:
+                resummarize(mid, dict(self.cfg))
+                self.ui_q.put(("meeting_update", mid))
+                self.ui_q.put(("show", "note", "নতুন সারাংশ তৈরি হয়েছে"))
+            except Exception as e:
+                log(f"resummarize failed: {e!r}")
+                self.ui_q.put(("show", "error", "সারাংশ বানানো যায়নি, একটু পরে আবার চেষ্টা করো"))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _notes_retry(self):
+        mid = self._notes_sel()
+        if not mid or self.meeting:
+            return
+        meta = MeetingStore.load(mid) or {}
+        if meta.get("status") == "summary_failed":
+            return self._notes_resummarize()
+        if not any(os.path.exists(os.path.join(MeetingStore.folder(mid), f"{k}.pcm")) for k in ("mic", "sys")):
+            messagebox.showinfo(APP, "এই মিটিংয়ের অডিও আর নেই, তাই আবার প্রসেস করা যাবে না।", parent=self.notes_win)
+            return
+        self.meeting = MeetingSession(self, mid=mid)
+        self.refresh_meeting_ui()
+
+    def _notes_delete(self):
+        mid = self._notes_sel()
+        if not mid or (self.meeting and self.meeting.id == mid):
+            return
+        meta = MeetingStore.load(mid) or {}
+        if messagebox.askyesno(APP, f"\"{meta.get('title', '')}\" মুছে ফেলবো? নোট, ট্রান্সক্রিপ্ট ও অডিও সব মুছে যাবে, "
+                                    "আর ফেরত আনা যাবে না।", parent=self.notes_win):
+            MeetingStore.delete(mid)
+            self._notes_reload(keep=False)
+
+    def setup_meetings(self):
+        """Called once at start-up (Windows)."""
+        for m in MeetingStore.list():                 # the app was closed while these were running
+            if m.get("status") in ("recording", "processing"):
+                m["status"] = "interrupted"
+                try:
+                    MeetingStore.save(m)
+                except Exception:
+                    pass
+        self.apply_meeting_settings()
+        self.detector = MeetingDetector(self)
+        self.detector.start()
+
+    def apply_meeting_settings(self):
+        on = MEETING_SUPPORTED and self.cfg.get("notes_enabled", True)
+        self.hook.set_toggle_hotkey(self.cfg.get("note_hotkey", DEFAULT_NOTE_HOTKEY) if on else [])
+        want_bar = on and self.cfg.get("float_button", True)
+        if want_bar and not self.float_bar:
+            self.float_bar = FloatBar(self)
+        elif not want_bar and self.float_bar:
+            self.float_bar.destroy()
+            self.float_bar = None
+        elif self.float_bar:
+            self.float_bar.place()
+            self.float_bar.draw()
 
     # ---- popup when nowhere to paste ----
     def open_popup(self, text):
@@ -1611,6 +3017,17 @@ class App:
         v_sound = tk.BooleanVar(value=cfg["sounds"])
         v_start = tk.BooleanVar(value=cfg["start_with_windows"])
         v_pipe = tk.BooleanVar(value=cfg["pipeline"])
+        v_notes = tk.BooleanVar(value=cfg.get("notes_enabled", True))
+        v_float = tk.BooleanVar(value=cfg.get("float_button", True))
+        v_autostop = tk.BooleanVar(value=cfg.get("meeting_autostop", True))
+        v_keep = tk.BooleanVar(value=cfg.get("keep_meeting_audio", False))
+        detect_opts = {"ask": "জিজ্ঞেস করো (নোট নেবো কিনা)", "auto": "নিজে থেকেই নোট নেওয়া শুরু করো",
+                       "off": "কিছু করো না"}
+        v_detect = tk.StringVar(value=detect_opts.get(cfg.get("meeting_detect", "ask"), detect_opts["ask"]))
+        nlang_opts = {"auto": "মিটিংয়ের ভাষা অনুযায়ী", "bn": "বাংলা", "en": "English"}
+        v_nlang = tk.StringVar(value=nlang_opts.get(cfg.get("notes_language", "auto"), nlang_opts["auto"]))
+        note_hotkey = list(cfg.get("note_hotkey", DEFAULT_NOTE_HOTKEY))
+        v_nhk = tk.StringVar(value=hotkey_label(note_hotkey))
         adv = {k: tk.StringVar(value=cfg[k]) for k in
                ("gemini_tx_model", "gemini_model", "groq_api_key", "groq_model",
                 "openai_api_key", "openai_model", "local_model", "local_model_path", "local_device")}
@@ -1715,6 +3132,48 @@ class App:
         else:
             hint(t5, i, plat.NO_OFFLINE_HINT)
 
+        # --- tab: meeting notes (Windows) ---
+        if MEETING_SUPPORTED:
+            tm = tab("মিটিং নোট")
+            ttk.Label(tm, text="মিটিংয়ের নোট ও সারাংশ, নিজে থেকেই", style="Title.TLabel").grid(
+                row=0, column=0, columnspan=2, sticky="w")
+            ttk.Label(tm, text="Google Meet, Zoom, Teams, Slack, Discord, WhatsApp সহ সব মিটিংয়ে কাজ করে। "
+                               "আপনার মাইক আর কম্পিউটারের সাউন্ড (অন্যদের কণ্ঠ) দুটোই শোনে, প্রতি ২ মিনিটে লিখে রাখে, "
+                               "শেষে সারাংশ, মূল পয়েন্ট, সিদ্ধান্ত আর করণীয় বানিয়ে দেয়।",
+                      style="Hint.TLabel", wraplength=int(560 * self.scale), justify="left").grid(
+                row=1, column=0, columnspan=2, sticky="w", pady=(2, 8))
+            ttk.Checkbutton(tm, text="মিটিং নোট চালু রাখো", variable=v_notes).grid(row=2, column=1, sticky="w", pady=2)
+            ttk.Checkbutton(tm, text="বাম পাশে ভাসমান Kotha বাটন দেখাও", variable=v_float).grid(
+                row=3, column=1, sticky="w", pady=2)
+            combo(tm, 4, "মিটিং শুরু হলে", v_detect, list(detect_opts.values()), width=40)
+            ttk.Checkbutton(tm, text="মিটিং শেষ হলে নোট নেওয়াও নিজে থেকে বন্ধ করো", variable=v_autostop).grid(
+                row=5, column=1, sticky="w", pady=2)
+            ttk.Label(tm, text="নোটের শর্টকাট").grid(row=6, column=0, sticky="w", padx=(0, 12), pady=4)
+            nbar = ttk.Frame(tm)
+            nbar.grid(row=6, column=1, sticky="w")
+            nhk_box = ttk.Combobox(nbar, textvariable=v_nhk, state="readonly", width=22,
+                                   values=[hotkey_label(p) for p in NOTE_HOTKEY_PRESETS])
+            nhk_box.pack(side="left")
+
+            def on_note_preset(_=None):
+                for p in NOTE_HOTKEY_PRESETS:
+                    if hotkey_label(p) == v_nhk.get():
+                        note_hotkey[:] = p
+            nhk_box.bind("<<ComboboxSelected>>", on_note_preset)
+
+            def set_note_custom(tokens):
+                note_hotkey[:] = tokens
+                v_nhk.set(hotkey_label(tokens))
+            ttk.Button(nbar, text="নিজের শর্টকাট…", command=lambda: self.capture_hotkey(w, set_note_custom)
+                       ).pack(side="left", padx=6)
+            combo(tm, 7, "নোটের ভাষা", v_nlang, list(nlang_opts.values()), width=40)
+            ttk.Checkbutton(tm, text="মিটিংয়ের অডিও ফাইলও রেখে দাও (meeting.wav)", variable=v_keep).grid(
+                row=8, column=1, sticky="w", pady=2)
+            hint(tm, 9, "রেকর্ড করার আগে মিটিংয়ের সবাইকে জানিয়ে রাখুন। নোট আর অডিও শুধু আপনার কম্পিউটারে থাকে; "
+                        "লেখার জন্য অডিও আপনার নিজের Gemini/Groq key দিয়ে পাঠানো হয়।")
+            ttk.Button(tm, text="মিটিং নোটগুলো দেখুন", command=self.open_notes).grid(
+                row=10, column=1, sticky="w", pady=(8, 0))
+
         # --- tab 6: about ---
         t6 = tab("পরিচিতি")
         t6.columnconfigure(0, weight=1)
@@ -1755,6 +3214,9 @@ class App:
             if not hotkey_valid(hotkey):
                 messagebox.showwarning(APP, "শর্টকাটটা ঠিক নেই।", parent=w)
                 return
+            if MEETING_SUPPORTED and sort_tokens(note_hotkey) == sort_tokens(hotkey):
+                messagebox.showwarning(APP, "কথা বলার শর্টকাট আর মিটিং নোটের শর্টকাট আলাদা হতে হবে।", parent=w)
+                return
             cfg.update({k: v.get().strip() for k, v in adv.items()})
             cfg.update({
                 "provider": prov, "gemini_api_key": v_gk.get().strip(),
@@ -1765,8 +3227,18 @@ class App:
                 "smart_paste": v_smart.get(), "restore_clipboard": v_restore.get(), "pipeline": v_pipe.get(),
                 "sounds": v_sound.get(), "start_with_windows": v_start.get(),
             })
+            if MEETING_SUPPORTED:
+                cfg.update({
+                    "notes_enabled": v_notes.get(), "float_button": v_float.get(),
+                    "meeting_detect": next(k for k, v in detect_opts.items() if v == v_detect.get()),
+                    "meeting_autostop": v_autostop.get(), "note_hotkey": list(note_hotkey),
+                    "notes_language": next(k for k, v in nlang_opts.items() if v == v_nlang.get()),
+                    "keep_meeting_audio": v_keep.get(),
+                })
             cfg.save()
             self.hook.set_hotkey(cfg["hotkey"])
+            if MEETING_SUPPORTED:
+                self.apply_meeting_settings()
             set_startup(cfg["start_with_windows"])
             if not cfg.ready():
                 messagebox.showwarning(APP, "বেছে নেওয়া engine এর API key দাও।", parent=w)
@@ -1848,6 +3320,11 @@ class App:
             self.ui_q.put(("settings",))
         self.hook.start()
         self.controller.start()
+        if MEETING_SUPPORTED:
+            try:
+                self.setup_meetings()
+            except Exception as e:
+                log(f"meeting notes setup failed: {e!r}")
         set_startup(self.cfg["start_with_windows"])
         self.cfg.save()
         if not self.cfg.ready():
@@ -1865,7 +3342,40 @@ def set_startup(enabled):
     plat.set_startup(enabled, APP)
 
 
+def selftest():
+    """Kotha.exe --selftest : checks that the bundled audio/meeting parts load (used to verify builds)."""
+    lines = [f"Kotha {VERSION} selftest on {plat.OS_NAME}"]
+    ok = True
+    try:
+        import numpy  # noqa: F401
+        import soundcard as sc
+        spk = sc.default_speaker()
+        lines.append(f"speakers={len(sc.all_speakers())} mics={len(sc.all_microphones())} default_out={spk.name}")
+        loop = sc.get_microphone(id=str(spk.id), include_loopback=True)
+        with loop.recorder(samplerate=SR, channels=1) as r:
+            lines.append(f"loopback ok, {len(r.record(numframes=SR // 10))} frames")
+    except Exception as e:
+        ok = False
+        lines.append(f"audio FAILED: {e!r}")
+    try:
+        lines.append(f"meeting detection ok: {plat.active_meetings('')}")
+    except Exception as e:
+        ok = False
+        lines.append(f"detection FAILED: {e!r}")
+    lines.append("RESULT: " + ("OK" if ok else "FAILED"))
+    for line in lines:
+        log("selftest: " + line)
+    try:
+        with open(os.path.join(DATA_DIR, "selftest.txt"), "w", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+    except Exception:
+        pass
+    return 0 if ok else 1
+
+
 def main():
+    if "--selftest" in sys.argv:
+        os._exit(selftest())
     if not plat.acquire_single_instance(APP):
         plat.already_running_notice(APP)
         return

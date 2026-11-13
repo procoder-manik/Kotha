@@ -69,6 +69,9 @@ TOKEN_LABEL = {"ctrl": "Control", "lctrl": "Left Control", "rctrl": "Right Contr
                "tab": "Tab", "backtick": "`"}
 ORDER = ["ctrl", "lctrl", "rctrl", "alt", "lalt", "ralt", "shift", "lshift", "rshift", "win"]
 DEFAULT_HOTKEY = ["ralt"]    # hold Right Option, talk, release
+DEFAULT_NOTE_HOTKEY = ["ctrl", "alt", "m"]
+NOTE_HOTKEY_PRESETS = [["ctrl", "alt", "m"], ["ctrl", "shift", "m"], ["f8"]]
+SUPPORTS_MEETINGS = False     # meeting notes: Windows first, Mac in a later version
 HOTKEY_PRESETS = [
     ["ralt"], ["ctrl", "alt"], ["ctrl", "win"], ["rctrl"], ["alt", "win"],
     ["ctrl", "shift", "space"], ["f9"],
@@ -163,7 +166,7 @@ def init_overlay(win, key):
     win.attributes("-alpha", 0.96)
 
 
-def make_no_activate(widget):
+def make_no_activate(widget, click_through=True):
     pass                     # already done in init_overlay
 
 
@@ -259,6 +262,7 @@ class HotkeyHook(threading.Thread):
         self._tap = None
         self._pid = os.getpid()
         self.set_hotkey(tokens)
+        self.set_toggle_hotkey([])
 
     def set_hotkey(self, tokens):
         groups = [TOKEN_VKS[t] for t in tokens if t in TOKEN_VKS]
@@ -270,6 +274,14 @@ class HotkeyHook(threading.Thread):
         self.groups, self.combo_vks, self.swallow_vks = groups, all_vks, swallow
         self.needs_mask = False
         self.combo = False
+
+    def set_toggle_hotkey(self, tokens):
+        self.tgroups = [TOKEN_VKS[t] for t in tokens if t in TOKEN_VKS]
+        self.t_swallow = set()
+        for t in tokens:
+            if t not in MOD_TOKENS:
+                self.t_swallow |= TOKEN_VKS.get(t, set())
+        self.tcombo = False
 
     def start_capture(self):
         self.cap_down, self.cap_all = set(), set()
@@ -337,6 +349,19 @@ class HotkeyHook(threading.Thread):
             elif not now and self.combo:
                 self.combo = False
                 self.q.put(("up", time.monotonic()))
+            if self.tgroups:
+                tnow = all(self.down & g for g in self.tgroups)
+                if tnow and not self.tcombo:
+                    self.tcombo = True
+                    self.ui_q.put(("note_toggle", False))
+                elif not tnow and self.tcombo:
+                    self.tcombo = False
+                if vk in self.t_swallow and (self.tcombo or vk in self.swallowed):
+                    if down:
+                        self.swallowed.add(vk)
+                    else:
+                        self.swallowed.discard(vk)
+                    return self._out(event, True)
             if vk in self.swallow_vks:
                 if down and self.combo:
                     self.swallowed.add(vk)
@@ -441,3 +466,7 @@ def already_running_notice(app_name):
 
 def setup_process():
     pass
+
+
+def active_meetings(self_exe=""):
+    return []                # not implemented on macOS yet

@@ -4,7 +4,7 @@
 
 # Kotha (কথা)
 
-**Free, open-source voice typing for Windows and macOS. Speak Bangla, English, or a natural mix of both, and the text appears wherever your cursor is.**
+**Free, open-source voice typing and AI meeting notes for Windows (voice typing on macOS too). Speak Bangla, English, or a natural mix of both, and the text appears wherever your cursor is.**
 
 কথা বলুন, লেখা হয়ে যাবে।
 
@@ -125,6 +125,29 @@ Gemini's free tier has a daily limit. Add a free key from **https://console.groq
 | Wrong microphone | Choose the microphone in the **সাধারণ** tab. |
 | Proxy or network error | Check your Windows proxy settings and internet connection. |
 
+## Meeting notes (new in 2.3.0, Windows)
+
+Kotha now also takes notes for your meetings, in the same app. Voice typing keeps working at the same time.
+
+- **Works with every call app**: Google Meet, Zoom, Microsoft Teams, Slack, Discord, WhatsApp, Webex and others.
+- **Hears everyone**: your microphone (marked **আমি**) and the call audio from your speakers or headphones (the other people, marked **Speaker 1, Speaker 2, ...**).
+- **Any length**: the audio is saved to disk and written down every 2 minutes while the meeting runs, so long meetings are fine.
+- **Clear notes at the end**: title, summary, key points by topic, decisions, action items (task, owner, due date) and open questions. In Bangla, English, or the meeting's own language.
+- **Finds your meetings**: when a call app starts using the microphone, Kotha asks *"নোট নেবো?"*. You can also make it start by itself, or turn this off.
+- **Floating button** on the left edge of the screen. Hover to see the shortcuts and a start/stop button; drag it up or down to move it.
+
+**How to use**
+
+1. Join your meeting. When Kotha asks, click **হ্যাঁ, নোট নাও**. Or press **Win + Alt + M**, or click the floating button.
+2. Talk as usual. Press **Win + Alt + M** again (or the red button) when the meeting ends. If the meeting app closes its call, Kotha stops by itself.
+3. A card says **মিটিং নোট তৈরি হয়েছে ✓**. Click **খুলুন** to see the notes and the full transcript. Copy them, or save them as Markdown.
+
+All meetings are listed under the tray icon > **মিটিং নোটগুলো**. Settings > **মিটিং নোট** controls detection, auto-stop, the shortcut, the notes language and the floating button.
+
+> **Be fair to others:** tell everyone in the meeting before you record. Notes and audio stay on your computer; the audio is sent for transcription only with your own Gemini (or Groq/OpenAI) key. Raw audio is deleted after the notes are made unless you turn on *keep audio*.
+
+Free Gemini keys have a per-minute limit. If a part cannot be written right away, Kotha keeps its audio and retries; you can also press **বাকি অংশ আবার প্রসেস করো** later. Meeting notes on Mac will come in a later version.
+
 ## বাংলায় সংক্ষেপে
 
 1. [Releases](../../releases/latest) থেকে `Kotha-Windows-Setup.exe` নামিয়ে ইনস্টল করুন।
@@ -132,6 +155,7 @@ Gemini's free tier has a daily limit. Add a free key from **https://console.groq
 3. **Create API key** চাপুন, তারপর **Create API key in new project** বেছে নিন। কোনো billing বা কার্ড যোগ করবেন না, তাহলেই ফ্রি থাকবে।
 4. key কপি করে Kotha এর Settings এ **Gemini API key** ঘরে বসান, **Key চেক করো** চাপুন, তারপর **Save**।
 5. যেকোনো টেক্সট বক্সে ক্লিক করুন, **Ctrl + Win** (Mac এ **Right Option**) চেপে ধরে কথা বলুন, ছেড়ে দিলেই লেখা বসে যাবে।
+6. মিটিং নোট (Windows): মিটিং শুরু হলে Kotha জিজ্ঞেস করবে "নোট নেবো?"। অথবা **Win + Alt + M** চাপুন। মিটিং শেষে আবার চাপলে সারাংশ, মূল পয়েন্ট, সিদ্ধান্ত আর করণীয়সহ নোট তৈরি হবে।
 
 ## Engines
 

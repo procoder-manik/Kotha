@@ -59,6 +59,9 @@ TOKEN_LABEL = {"ctrl": "Ctrl", "lctrl": "Left Ctrl", "rctrl": "Right Ctrl", "alt
                "apps": "Menu", "backtick": "`"}
 ORDER = ["ctrl", "lctrl", "rctrl", "alt", "lalt", "ralt", "shift", "lshift", "rshift", "win"]
 DEFAULT_HOTKEY = ["ctrl", "win"]
+DEFAULT_NOTE_HOTKEY = ["win", "alt", "m"]     # start / stop meeting notes
+NOTE_HOTKEY_PRESETS = [["win", "alt", "m"], ["ctrl", "alt", "m"], ["ctrl", "shift", "m"], ["f8"]]
+SUPPORTS_MEETINGS = True
 HOTKEY_PRESETS = [
     ["ctrl", "win"], ["ctrl", "alt"], ["ralt"], ["rctrl"], ["alt", "win"],
     ["ctrl", "shift", "space"], ["f9"], ["capslock"],
@@ -149,9 +152,12 @@ def init_overlay(win, key):
     win.attributes("-alpha", 0.96)
 
 
-def make_no_activate(widget):
+def make_no_activate(widget, click_through=True):
+    """Never take focus from the app you are typing in. click_through=False keeps the window clickable."""
     GWL_EXSTYLE = -20
-    style_add = 0x08000000 | 0x80 | 0x8 | 0x20 | 0x80000  # NOACTIVATE|TOOLWINDOW|TOPMOST|TRANSPARENT|LAYERED
+    style_add = 0x08000000 | 0x80 | 0x8                    # NOACTIVATE|TOOLWINDOW|TOPMOST
+    if click_through:
+        style_add |= 0x20 | 0x80000                        # TRANSPARENT|LAYERED
     widget.update_idletasks()
     hwnd = user32.GetParent(widget.winfo_id()) or widget.winfo_id()
     user32.SetWindowLongW(hwnd, GWL_EXSTYLE, user32.GetWindowLongW(hwnd, GWL_EXSTYLE) | style_add)
@@ -247,6 +253,7 @@ class HotkeyHook(threading.Thread):
         self.capturing = False
         self.cap_down, self.cap_all = set(), set()
         self.set_hotkey(tokens)
+        self.set_toggle_hotkey([])
         self._proc = HOOKPROC(self._callback)
 
     def set_hotkey(self, tokens):
@@ -259,6 +266,16 @@ class HotkeyHook(threading.Thread):
         self.groups, self.combo_vks, self.swallow_vks = groups, all_vks, swallow
         self.needs_mask = any(t in ("alt", "lalt", "ralt", "win") for t in tokens)
         self.combo = False
+
+    def set_toggle_hotkey(self, tokens):
+        """A second shortcut that fires once per press (used to start/stop meeting notes)."""
+        self.tgroups = [TOKEN_VKS[t] for t in tokens if t in TOKEN_VKS]
+        self.t_swallow = set()
+        for t in tokens:
+            if t not in MOD_TOKENS:
+                self.t_swallow |= TOKEN_VKS.get(t, set())
+        self.t_mask = any(t in ("alt", "lalt", "ralt", "win") for t in tokens)
+        self.tcombo = False
 
     def start_capture(self):
         self.cap_down, self.cap_all = set(), set()
@@ -305,6 +322,20 @@ class HotkeyHook(threading.Thread):
                 elif not now and self.combo:
                     self.combo = False
                     self.q.put(("up", time.monotonic()))
+                if self.tgroups:
+                    tnow = all(self.down & g for g in self.tgroups)
+                    if tnow and not self.tcombo:
+                        self.tcombo = True
+                        self.ui_q.put(("note_toggle", self.t_mask))
+                    elif not tnow and self.tcombo:
+                        self.tcombo = False
+                    if vk in self.t_swallow:
+                        if down and self.tcombo:
+                            self.swallowed.add(vk)
+                            return 1
+                        if not down and vk in self.swallowed:
+                            self.swallowed.discard(vk)
+                            return 1
                 if vk in self.swallow_vks:
                     if down and self.combo:
                         self.swallowed.add(vk)
@@ -379,3 +410,111 @@ def setup_process():
         ctypes.windll.shcore.SetProcessDpiAwareness(1)
     except Exception:
         pass
+
+
+# --------------------------------------------------------------------------
+# Meeting detection: which call app is holding the microphone right now?
+# Windows records this per app under CapabilityAccessManager (LastUsedTimeStop == 0 while in use).
+# --------------------------------------------------------------------------
+_MIC_STORE = r"Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\microphone"
+MEETING_EXES = {
+    "zoom.exe": "Zoom", "ms-teams.exe": "Microsoft Teams", "teams.exe": "Microsoft Teams", "slack.exe": "Slack",
+    "discord.exe": "Discord", "webex.exe": "Webex", "ciscocollabhost.exe": "Webex", "webexmta.exe": "Webex",
+    "atmgr.exe": "Webex", "skype.exe": "Skype", "whatsapp.exe": "WhatsApp", "telegram.exe": "Telegram",
+    "lark.exe": "Lark", "feishu.exe": "Lark", "ringcentral.exe": "RingCentral", "g2mcomm.exe": "GoTo Meeting",
+    "gotomeeting.exe": "GoTo Meeting", "chime.exe": "Amazon Chime", "signal.exe": "Signal", "viber.exe": "Viber",
+    "messenger.exe": "Messenger", "zoho meeting.exe": "Zoho Meeting", "bluejeans.exe": "BlueJeans",
+}
+BROWSER_EXES = {"chrome.exe", "msedge.exe", "firefox.exe", "brave.exe", "opera.exe", "vivaldi.exe", "arc.exe",
+                "comet.exe", "chromium.exe", "yandex.exe", "thorium.exe", "dia.exe", "zen.exe", "floorp.exe"}
+PACKAGED_APPS = {"msteams": "Microsoft Teams", "whatsappdesktop": "WhatsApp", "slack": "Slack", "zoom": "Zoom",
+                 "skypeapp": "Skype", "telegram": "Telegram", "messenger": "Messenger", "discord": "Discord"}
+WEB_MEETINGS = [("Google Meet", "Google Meet"), ("Meet - ", "Google Meet"), ("meet.google.com", "Google Meet"),
+                ("Zoom", "Zoom"), ("Microsoft Teams", "Microsoft Teams"), ("Teams", "Microsoft Teams"),
+                ("Webex", "Webex"), ("Jitsi", "Jitsi Meet"), ("Whereby", "Whereby"), ("Discord", "Discord"),
+                ("Slack", "Slack"), ("Messenger", "Messenger"), ("WhatsApp", "WhatsApp"), ("StreamYard", "StreamYard"),
+                ("Riverside", "Riverside")]
+
+
+def _mic_users():
+    """[(app id, is_packaged)] of apps whose microphone session is open right now."""
+    out = []
+    for path, packaged in ((_MIC_STORE, True), (_MIC_STORE + r"\NonPackaged", False)):
+        try:
+            k = winreg.OpenKey(winreg.HKEY_CURRENT_USER, path)
+        except OSError:
+            continue
+        i = 0
+        while True:
+            try:
+                name = winreg.EnumKey(k, i)
+            except OSError:
+                break
+            i += 1
+            if name == "NonPackaged":
+                continue
+            try:
+                with winreg.OpenKey(k, name) as sk:
+                    stop = winreg.QueryValueEx(sk, "LastUsedTimeStop")[0]
+                    start = winreg.QueryValueEx(sk, "LastUsedTimeStart")[0]
+                if start and stop == 0:
+                    out.append((name.replace("#", "\\"), packaged))
+            except OSError:
+                pass
+        winreg.CloseKey(k)
+    return out
+
+
+_EnumProc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+user32.EnumWindows.argtypes = (_EnumProc, wintypes.LPARAM)
+user32.GetWindowTextLengthW.argtypes = (wintypes.HWND,)
+user32.GetWindowTextW.argtypes = (wintypes.HWND, wintypes.LPWSTR, ctypes.c_int)
+user32.IsWindowVisible.argtypes = (wintypes.HWND,)
+
+
+def window_titles():
+    titles = []
+
+    def cb(hwnd, _):
+        if user32.IsWindowVisible(hwnd):
+            n = user32.GetWindowTextLengthW(hwnd)
+            if n:
+                buf = ctypes.create_unicode_buffer(n + 1)
+                user32.GetWindowTextW(hwnd, buf, n + 1)
+                titles.append(buf.value)
+        return True
+    user32.EnumWindows(_EnumProc(cb), 0)
+    return titles
+
+
+def active_meetings(self_exe=""):
+    """[(key, label)] for call apps using the microphone right now. key == label, so an app that briefly
+    reopens the mic (mute/unmute, device switch) still counts as the same meeting."""
+    found = {}
+    titles = None
+    for app_id, packaged in _mic_users():
+        low = app_id.lower()
+        if self_exe and low == self_exe.lower():
+            continue
+        if packaged:
+            for frag, label in PACKAGED_APPS.items():
+                if frag in low:
+                    found[label] = label
+            continue
+        exe = os.path.basename(low)
+        if exe in MEETING_EXES:
+            found[MEETING_EXES[exe]] = MEETING_EXES[exe]
+        elif exe in BROWSER_EXES:
+            if titles is None:
+                titles = window_titles()
+            label = None
+            for t in titles:
+                for frag, lab in WEB_MEETINGS:
+                    if frag in t:
+                        label = lab
+                        break
+                if label:
+                    break
+            label = label or "ব্রাউজারের কল"
+            found[label] = label
+    return list(found.items())

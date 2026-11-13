@@ -17,7 +17,8 @@ a = Analysis(
     datas=[("assets", "assets")],
     hiddenimports=hidden,
     excludes=["unittest", "pydoc", "lib2to3", "setuptools", "numpy", "faster_whisper", "ctranslate2",
-              "onnxruntime", "av", "tokenizers", "huggingface_hub", "plat_win", "uiautomation", "comtypes"],
+              "onnxruntime", "av", "tokenizers", "huggingface_hub", "plat_win", "uiautomation", "comtypes",
+              "soundcard"],
 )
 pyz = PYZ(a.pure)
 exe = EXE(pyz, a.scripts, [], exclude_binaries=True, name="Kotha", console=False, argv_emulation=False)
