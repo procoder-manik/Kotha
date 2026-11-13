@@ -1,0 +1,61 @@
+name: Release
+on:
+  push:
+    tags: ["v*"]
+permissions:
+  contents: write
+jobs:
+  create-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: softprops/action-gh-release@v2
+        with:
+          name: Kotha ${{ github.ref_name }}
+          body_path: .github/release-notes.md
+
+  windows:
+    needs: create-release
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        edition: [lite, offline]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install NSIS
+        run: choco install nsis -y --no-progress
+      - name: Build
+        shell: cmd
+        run: |
+          set PATH=%PATH%;C:\Program Files (x86)\NSIS
+          if "${{ matrix.edition }}"=="offline" (echo.| call build.bat offline) else (echo.| call build.bat)
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: output/*.exe
+
+  mac:
+    needs: create-release
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.arch == 'Intel' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest          # Apple Silicon (M1/M2/M3/M4)
+            arch: AppleSilicon
+          - os: macos-15-intel        # Intel Macs
+            arch: Intel
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build .dmg
+        run: bash build_mac.sh
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: output/*.dmg

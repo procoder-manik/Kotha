@@ -1,8 +1,6 @@
 name: Build Kotha installers
 on:
   workflow_dispatch:
-  push:
-    tags: ["v*"]
 jobs:
   build:
     runs-on: windows-latest
