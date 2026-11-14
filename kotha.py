@@ -2893,9 +2893,9 @@ class App:
                                      placeholder_text_color=ui.C["faint"])
         self.n_search.pack(fill="x", padx=6, pady=(0, 8))
         self.n_search.bind("<KeyRelease>", lambda e: self._notes_reload(keep=True))
-        self.n_listf = ctk.CTkScrollableFrame(left, fg_color="transparent", scrollbar_button_color=C["surface3"],
-                                              scrollbar_button_hover_color=C["border"])
-        self.n_listf.pack(fill="both", expand=True)
+        n_scroll = ui.ScrollPage(left, bg=w._kotha_bg)
+        n_scroll.pack(fill="both", expand=True)
+        self.n_listf = n_scroll.inner
 
         # ---------- right: one meeting ----------
         right = ctk.CTkFrame(w, fg_color="transparent")
@@ -3259,7 +3259,8 @@ class App:
         win._kotha_size = (w, h)
         if not resizable:
             win.resizable(False, False)
-        win.configure(fg_color=ui.style_window(win))
+        win._kotha_bg = ui.style_window(win)
+        win.configure(fg_color=win._kotha_bg)
         ui.set_icon(win, resource("assets/kotha.ico"))
         return win
 
@@ -3552,11 +3553,10 @@ class App:
         h_title.pack(anchor="w")
         h_sub = ui.label(head, "", 13, color=C["muted"])
         h_sub.pack(anchor="w", pady=(0, 6))
-        pages = {}
+        pages, outers = {}, {}
         for key, _, _ in pages_def:
-            pg = ctk.CTkScrollableFrame(content, fg_color="transparent", scrollbar_button_color=C["surface3"],
-                                        scrollbar_button_hover_color=C["border"])
-            pages[key] = pg
+            sp = ui.ScrollPage(content, bg=w._kotha_bg)
+            outers[key], pages[key] = sp, sp.inner
 
         builders, built = {}, set()
 
@@ -3568,7 +3568,7 @@ class App:
                 sel = k == key
                 b.configure(fg_color=C["accent_soft"] if sel else "transparent",
                             text_color=C["accent_text"] if sel else C["muted"])
-            for k, pg in pages.items():
+            for k, pg in outers.items():
                 if k == key:
                     pg.grid(row=1, column=0, sticky="nsew")
                 else:

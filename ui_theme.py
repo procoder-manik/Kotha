@@ -279,3 +279,38 @@ def section(parent, title=None, subtitle=None):
 def bind_link(widget, url_opener):
     widget.configure(cursor="hand2")
     widget.bind("<Button-1>", lambda e: url_opener())
+
+
+class ScrollPage(ctk.CTkFrame):
+    """Vertical scrolling area. Replaces CTkScrollableFrame, which can loop forever on macOS when the window
+    size is not a whole number of pixels. Put content into `.inner`."""
+
+    def __init__(self, master, bg, **kw):
+        super().__init__(master, fg_color="transparent", **kw)
+        self.canvas = tk.Canvas(self, bg=bg, highlightthickness=0, bd=0, yscrollincrement=24)
+        self.bar = ctk.CTkScrollbar(self, command=self.canvas.yview, button_color=C["surface3"],
+                                    button_hover_color=C["border"])
+        self.canvas.configure(yscrollcommand=self.bar.set)
+        self.bar.pack(side="right", fill="y")
+        self.canvas.pack(side="left", fill="both", expand=True)
+        self.inner = ctk.CTkFrame(self.canvas, fg_color=bg, corner_radius=0)
+        self._item = self.canvas.create_window(0, 0, window=self.inner, anchor="nw")
+        self._width = 0
+        self.inner.bind("<Configure>", self._on_inner)
+        self.canvas.bind("<Configure>", self._on_canvas)
+        self.canvas.bind("<Enter>", lambda e: self.canvas.bind_all("<MouseWheel>", self._wheel))
+        self.canvas.bind("<Leave>", lambda e: self.canvas.unbind_all("<MouseWheel>"))
+
+    def _on_inner(self, e):
+        self.canvas.configure(scrollregion=(0, 0, e.width, e.height))
+
+    def _on_canvas(self, e):
+        if abs(e.width - self._width) > 1:          # one-way update: no ping-pong between the two sizes
+            self._width = e.width
+            self.canvas.itemconfigure(self._item, width=e.width)
+
+    def _wheel(self, e):
+        if self.inner.winfo_height() <= self.canvas.winfo_height():
+            return
+        step = -int(e.delta / 120) if IS_WIN else -int(e.delta)
+        self.canvas.yview_scroll(step or (-1 if e.delta > 0 else 1), "units")
