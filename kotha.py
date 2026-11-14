@@ -1253,10 +1253,11 @@ class Controller(threading.Thread):
 
 # --------------------------------------------------------------------------
 # Meeting notes: record a whole meeting (your mic + everyone else through the speakers),
-# transcribe it in 2-minute pieces while it runs, then write a summary with key points.
+# transcribe it in 30-second pieces while it runs, then write a summary with key points.
 # --------------------------------------------------------------------------
 MEET_DIR = os.path.join(DATA_DIR, "meetings")
-MEET_CHUNK_S = 60               # transcribe every minute of audio (live transcript, short wait at the end)
+MEET_CHUNK_S = 30               # transcribe every 30 s of audio in the background (live transcript, tiny wait at the end)
+MEET_WORKERS = 3                # pieces transcribed at the same time
 MEET_MAX_HOURS = 6
 MEETING_SUPPORTED = plat.SUPPORTS_MEETINGS
 
@@ -1288,7 +1289,8 @@ class MeetingRecorder:
         self.t0 = time.monotonic()
         self.running = True
         for kind in ("mic", "sys"):
-            t = threading.Thread(target=self._loop_mac if plat.IS_MAC else self._loop, args=(kind,), daemon=True)
+            target = self._loop_mac if plat.IS_MAC else (self._loop_sys_win if kind == "sys" else self._loop)
+            t = threading.Thread(target=target, args=(kind,), daemon=True)
             t.start()
             self.threads.append(t)
 
@@ -1335,6 +1337,90 @@ class MeetingRecorder:
                 self.errors[kind] = str(e)
                 time.sleep(2)
         self.alive[kind] = False
+        f.close()
+
+    def _loop_sys_win(self, kind="sys"):
+        """Windows call audio. A call can play on any output: the speakers, a headset, or the separate
+        "communications" device that Meet/Zoom/Teams often pick. Listen to every active output at once
+        and mix them, so the other people are recorded wherever their voices go."""
+        import collections
+        import numpy as np
+        import soundcard as sc
+        f = open(self.paths["sys"], "ab")
+        blk = SR // 10
+        feeds = {}                                     # device id -> feed (deque of float32 blocks)
+
+        class Feed:
+            def __init__(self):
+                self.q = collections.deque(maxlen=60)
+                self.carry = np.zeros(0, np.float32)
+
+            def take(self, n):
+                while len(self.carry) < n and self.q:
+                    self.carry = np.concatenate([self.carry, self.q.popleft()])
+                if len(self.carry) > SR:               # clock drift: never fall more than a second behind
+                    self.carry = self.carry[-n:]
+                out, self.carry = self.carry[:n], self.carry[n:]
+                return out if len(out) == n else np.pad(out, (0, n - len(out)))
+
+        def com_init():                                # every thread that talks to Windows audio needs COM
+            try:
+                ctypes.windll.ole32.CoInitializeEx(None, 0)
+            except Exception:
+                pass
+
+        def reader(sid, feed):
+            com_init()
+            last_err = None
+            while self.running and feeds.get(sid) is feed:
+                try:
+                    dev = sc.get_microphone(id=sid, include_loopback=True)
+                    with dev.recorder(samplerate=SR, channels=1, blocksize=blk) as r:
+                        while self.running and feeds.get(sid) is feed:
+                            d = r.record(numframes=blk)
+                            feed.q.append(np.nan_to_num(d[:, 0] if d.ndim == 2 else d).astype(np.float32))
+                except Exception as e:
+                    if str(e) != last_err:
+                        log(f"meeting: output device capture error: {e!r}")
+                        last_err = str(e)
+                    for _ in range(20):
+                        if not self.running:
+                            break
+                        time.sleep(0.1)
+
+        com_init()
+        last_scan, nxt = 0.0, time.monotonic()
+        while self.running:
+            now = time.monotonic()
+            if now - last_scan > 3:                    # headphones plugged in / Bluetooth connected, etc.
+                last_scan = now
+                try:
+                    ids = {str(spk.id) for spk in sc.all_speakers()}
+                    for sid in list(feeds):
+                        if sid not in ids:
+                            feeds.pop(sid, None)
+                    for sid in ids - set(feeds):
+                        feeds[sid] = Feed()
+                        threading.Thread(target=reader, args=(sid, feeds[sid]), daemon=True).start()
+                    self.alive["sys"] = bool(feeds)
+                    self.errors.pop("sys", None)
+                except Exception as e:
+                    if self.errors.get("sys") != str(e):
+                        log(f"meeting sys device list error: {e!r}")
+                    self.errors["sys"] = str(e)
+            nxt += 0.1
+            delay = nxt - time.monotonic()
+            if delay > 0:
+                time.sleep(delay)
+            elif delay < -1:                           # the PC slept or stalled: the gap is filled by _append
+                nxt = time.monotonic()
+            mix = np.zeros(blk, np.float32)
+            for feed in list(feeds.values()):
+                mix += feed.take(blk)
+            self.level["sys"] = min(1.0, float(np.sqrt(np.mean(mix * mix))) * 9)
+            self._append("sys", f, np.clip(mix * 32767, -32768, 32767).astype("<i2").tobytes(), blk)
+        feeds.clear()
+        self.alive["sys"] = False
         f.close()
 
     def _loop_mac(self, kind):
@@ -1471,6 +1557,34 @@ def _block_levels(raw):
     return list(np.sqrt((a[:n].reshape(-1, BLOCK) ** 2).mean(axis=1)))
 
 
+def _speech_threshold(levels):
+    """Level above which a 50 ms block counts as speech. Relative to the track's own noise floor, so a
+    quiet microphone is not mistaken for silence."""
+    import numpy as np
+    if not levels:
+        return 1.0
+    floor = float(np.percentile(np.asarray(levels, dtype=np.float32), 20))
+    return max(0.0015, floor * 3.0)
+
+
+def _has_speech(levels):
+    thr = _speech_threshold(levels)
+    return sum(1 for lv in levels if lv >= thr) >= 6          # at least ~0.3 s of sound
+
+
+def _boost(raw, levels):
+    """Raise a quiet track to a normal loudness before sending it (Gemini hears quiet speech badly)."""
+    import numpy as np
+    loud = float(np.percentile(np.asarray(levels, dtype=np.float32), 98)) if levels else 0.0
+    if loud <= 0:
+        return raw
+    gain = min(10.0, 0.12 / loud)
+    if gain < 1.3:
+        return raw
+    a = np.frombuffer(raw, dtype="<i2").astype(np.float32) * gain
+    return np.clip(a, -32768, 32767).astype("<i2").tobytes()
+
+
 ME_LABEL = "আমি"
 
 
@@ -1505,48 +1619,99 @@ SEGMENT_SCHEMA = {"type": "ARRAY", "items": {"type": "OBJECT", "properties": {
     "required": ["start", "text"]}}
 
 
+# Meeting calls: connection problems are retried, but a slow answer is not sent again (that doubled waits).
+MEET_SESSION = requests.Session()
+MEET_SESSION.mount("https://", HTTPAdapter(pool_connections=4, pool_maxsize=12, max_retries=Retry(
+    total=2, connect=2, read=0, status=0, other=0, backoff_factor=0.2, allowed_methods=None, raise_on_status=False)))
+_no_thinking = set()          # models that reject a thinking setting
+
 # Meeting pieces: the Flash-Lite models answer in a few seconds and have the biggest free quota.
-# The final summary uses the stronger Flash model first.
 MEETING_TX_MODELS = ["gemini-flash-lite-latest", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite"]
 
 
-def _gemini_generate(cfg, parts, system_text, timeout, schema=None, prefer=None):
-    """One generateContent call across the Gemini model chain (each model has its own free quota)."""
+# Summary: Flash-Lite writes a full 30-60 minute summary in about 3 seconds with the same facts (measured);
+# Flash took 20-30 s and its free quota runs out quickly. Flash stays as a fallback.
+SUMMARY_MODELS = ["gemini-flash-lite-latest", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite",
+                  "gemini-3.8-flash", "gemini-flash-latest", "gemini-3.5-flash"]
+
+
+def _gemini_models(cfg, prefer):
     models = []
     for m in (prefer or []) + [cfg.get("gemini_model", "").strip() or "gemini-flash-latest"] + GEMINI_FALLBACKS:
         if m not in models:
             models.append(m)
+    return models
+
+
+def _gemini_body(model, parts, system_text, schema, thinking):
+    body = {"system_instruction": {"parts": [{"text": system_text}]},
+            "contents": [{"role": "user", "parts": parts}]}
+    gen = {}
+    if model not in _no_thinking:
+        if model.startswith("gemini-2.5-flash"):
+            gen["thinkingConfig"] = {"thinkingBudget": 0}
+        elif "flash" in model:
+            gen["thinkingConfig"] = {"thinkingLevel": thinking}
+    if schema:
+        gen.update({"responseMimeType": "application/json", "responseSchema": schema})
+    if gen:
+        body["generationConfig"] = gen
+    return body
+
+
+def _gemini_post(model, body, headers, timeout, stream=False):
+    url = f"{GEMINI_BASE}/v1beta/models/{model}:" + ("streamGenerateContent?alt=sse" if stream else "generateContent")
+    r = MEET_SESSION.post(url, json=body, headers=headers, timeout=timeout, stream=stream)
+    gen = body.get("generationConfig", {})
+    if r.status_code == 400 and "thinkingConfig" in gen:      # this model does not take a thinking setting
+        _no_thinking.add(model)
+        gen.pop("thinkingConfig")
+        if not gen:
+            body.pop("generationConfig")
+        r = MEET_SESSION.post(url, json=body, headers=headers, timeout=timeout, stream=stream)
+    return r
+
+
+def _gemini_generate(cfg, parts, system_text, timeout, schema=None, prefer=None, thinking="low", on_text=None):
+    """One Gemini call across the model chain (each model has its own free quota). With on_text, the answer
+    is streamed and on_text(text_so_far) is called as it grows."""
+    models = _gemini_models(cfg, prefer)
     headers = {"x-goog-api-key": cfg["gemini_api_key"].strip()}
     now = time.monotonic()
     last = None
     for model in models:
         if _model_blocked.get(model, 0) > now:
             continue
-        body = {"system_instruction": {"parts": [{"text": system_text}]},
-                "contents": [{"role": "user", "parts": parts}]}
-        gen = {}
-        if model.startswith("gemini-2.5-flash"):
-            gen["thinkingConfig"] = {"thinkingBudget": 0}
-        elif "flash" in model:
-            gen["thinkingConfig"] = {"thinkingLevel": "low"}
-        if schema:
-            gen.update({"responseMimeType": "application/json", "responseSchema": schema})
-        if gen:
-            body["generationConfig"] = gen
-        url = f"{GEMINI_BASE}/v1beta/models/{model}:generateContent"
+        body = _gemini_body(model, parts, system_text, schema, thinking)
         try:
-            r = SESSION.post(url, json=body, headers=headers, timeout=timeout)
-            if r.status_code == 400 and gen.pop("thinkingConfig", None) is not None:
-                if not gen:
-                    body.pop("generationConfig")
-                r = SESSION.post(url, json=body, headers=headers, timeout=timeout)
+            r = _gemini_post(model, body, headers, timeout, stream=on_text is not None)
             _gemini_check(r, model)
-            return _gemini_text(r)
+            if on_text is None:
+                return _gemini_text(r)
+            log(f"summary: streaming from {model}")
+            text, buf = "", b""
+            for data in r.iter_content(chunk_size=None):     # raw bytes; lines are split and decoded here (UTF-8)
+                buf += data
+                *lines, buf = buf.split(b"\n")
+                for line in lines:
+                    line = line.strip()
+                    if not line.startswith(b"data:"):
+                        continue
+                    d = json.loads(line[5:].decode("utf-8"))
+                    cands = d.get("candidates") or [{}]
+                    for part in (cands[0].get("content") or {}).get("parts") or []:
+                        if part.get("text") and not part.get("thought"):
+                            text += part["text"]
+                            on_text(text)
+            if not text.strip():
+                raise EmptyResult("empty answer")
+            return text.strip()
         except QuotaError as e:
             _model_blocked[model] = now + min(e.wait, 6 * 3600)
             last = e
-        except (BusyError, requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
-            _model_blocked[model] = now + 60
+        except (BusyError, requests.exceptions.Timeout, requests.exceptions.ConnectionError,
+                requests.exceptions.ChunkedEncodingError) as e:
+            _model_blocked[model] = now + 45
             last = e
         except EmptyResult as e:
             last = e
@@ -1574,9 +1739,10 @@ def _parse_segments(text, who):
         return [[0.0, label, t]] if t else []
 
 
-def transcribe_meeting_track(raw, cfg, who, context=""):
+def transcribe_meeting_track(raw, cfg, who, context="", levels=None):
     """Timed segments [[seconds, speaker, text], ...] for one track of a meeting piece."""
     seconds = len(raw) / 2 / SR
+    raw = _boost(raw, levels if levels is not None else _block_levels(raw))
     label = ME_LABEL if who == "me" else "Speaker 1"
     if cfg.get("provider") == "local" and LOCAL_AVAILABLE:
         t = clean_text(LOCAL.transcribe(raw, cfg))
@@ -1586,8 +1752,8 @@ def transcribe_meeting_track(raw, cfg, who, context=""):
         try:
             parts = [{"inline_data": {"mime_type": "audio/wav", "data": base64.b64encode(wav).decode()}},
                      {"text": "Transcribe this meeting audio."}]
-            text = _gemini_generate(cfg, parts, _meeting_track_prompt(cfg, seconds, who, context), 120, SEGMENT_SCHEMA,
-                                    prefer=MEETING_TX_MODELS)
+            text = _gemini_generate(cfg, parts, _meeting_track_prompt(cfg, seconds, who, context), (8, 45),
+                                    SEGMENT_SCHEMA, prefer=MEETING_TX_MODELS, thinking="minimal")
             return _parse_segments(text, who)
         except (QuotaError, EngineError) as e:
             log(f"meeting {who}: gemini failed ({str(e)[:120]}), trying backup")
@@ -1608,6 +1774,28 @@ NOTES_HEADINGS = {
     "bn": ["সারসংক্ষেপ", "মূল পয়েন্ট", "সিদ্ধান্ত", "করণীয়", "প্রশ্ন ও পরবর্তী ধাপ"],
     "en": ["Summary", "Key points", "Decisions", "Action items", "Open questions & next steps"],
 }
+
+
+def detect_meeting_lang(transcript):
+    """'bn' when a real share of what was said is in Bangla script, 'en' when it is English, else 'auto'."""
+    bn = lat = other = 0
+    for line in transcript.splitlines():
+        said = line.split(": ", 1)[1] if ": " in line else line      # leave out "[00:12] Speaker 1"
+        for ch in said:
+            if "\u0980" <= ch <= "\u09ff":
+                bn += 1
+            elif ch.isascii() and ch.isalpha():
+                lat += 1
+            elif ch.isalpha():
+                other += 1
+    total = bn + lat + other
+    if not total:
+        return "auto"
+    if bn >= 0.25 * total:
+        return "bn"
+    if lat >= 0.6 * total:
+        return "en"
+    return "auto"
 
 
 def _summary_prompt(lang):
@@ -1644,13 +1832,15 @@ def _summary_prompt(lang):
     ])
 
 
-def summarize_meeting(transcript, cfg, lang="auto"):
+def summarize_meeting(transcript, cfg, lang="auto", on_text=None):
+    if lang not in ("bn", "en"):
+        lang = detect_meeting_lang(transcript)
     system = _summary_prompt(lang)
     user = "Meeting transcript:\n\n" + transcript
     if cfg.get("gemini_api_key", "").strip():
         try:
-            return _gemini_generate(cfg, [{"text": user}], system, 240,
-                                    prefer=["gemini-3.8-flash", "gemini-flash-latest", "gemini-3.7-flash", "gemini-3.5-flash"]).strip()
+            return _gemini_generate(cfg, [{"text": user}], system, (8, 40), on_text=on_text, thinking="minimal",
+                                    prefer=SUMMARY_MODELS).strip()
         except (QuotaError, EngineError) as e:
             log(f"summary: gemini failed ({str(e)[:120]})")
             if not cfg.get("groq_api_key", "").strip() and not cfg.get("openai_api_key", "").strip():
@@ -1664,7 +1854,7 @@ def summarize_meeting(transcript, cfg, lang="auto"):
         key = cfg.get(key_name, "").strip()
         if not key:
             continue
-        r = SESSION.post(url, timeout=240, headers={"Authorization": f"Bearer {key}"},
+        r = MEET_SESSION.post(url, timeout=(8, 120), headers={"Authorization": f"Bearer {key}"},
                          json={"model": model, "temperature": 0.2,
                                "messages": [{"role": "system", "content": system}, {"role": "user", "content": user[-400000:]}]})
         if r.status_code == 200:
@@ -1678,7 +1868,7 @@ def place_segments(segments, levels):
     the text is spread over the moments where this track actually has speech (by text length)."""
     if not segments:
         return []
-    thr = 0.006
+    thr = _speech_threshold(levels)
     speech = [i for i, lv in enumerate(levels) if lv >= thr] or list(range(len(levels))) or [0]
     total = sum(max(1, len(t)) for _, _, t in segments)
     out, done = [], 0
@@ -1769,6 +1959,11 @@ def build_transcript(meta):
     return "\n".join(out)
 
 
+def _first_heading(notes):
+    first = notes.strip().splitlines()[0] if notes.strip() else ""
+    return first.lstrip("#").strip()[:90] if first.startswith("#") else ""
+
+
 class MeetingSession:
     """Runs one meeting: recording + background transcription + final summary.
     With `mid` it re-processes an existing (interrupted or partly failed) meeting from its saved audio."""
@@ -1794,6 +1989,7 @@ class MeetingSession:
             self.recorder = MeetingRecorder(self.folder, self.cfg.get("mic", ""))
             self.recorder.start()
         self.id = self.meta["id"]
+        self.lock = threading.RLock()
         threading.Thread(target=self._work, daemon=True).start()
 
     @property
@@ -1835,8 +2031,8 @@ class MeetingSession:
         return max(sizes) if sizes else 0
 
     def _cut_point(self, a, b):
-        """End the piece in the quietest 100 ms of its last 8 seconds, so words are not cut in half."""
-        win = min(8 * SR, b - a)
+        """End the piece in the quietest 50 ms of its last 5 seconds, so words are not cut in half."""
+        win = min(5 * SR, b - a)
         levels = _block_levels(mix_tracks(self.folder, b - win, b))
         if not levels:
             return b
@@ -1851,13 +2047,16 @@ class MeetingSession:
         jobs = []
         for who, raw in (("others", others), ("me", mine)):
             levels = _block_levels(raw)
-            if levels and max(levels) >= 0.006:
+            if levels and _has_speech(levels):
                 jobs.append((who, raw, levels))
 
         def one(job):                      # both voices are transcribed at the same time
             who, raw, levels = job
             try:
-                return place_segments(transcribe_meeting_track(raw, self.cfg, who, context), levels), None
+                t0 = time.monotonic()
+                segs = transcribe_meeting_track(raw, self.cfg, who, context, levels)
+                log(f"meeting piece {a // SR}s ({who}): {len(segs)} segments in {time.monotonic() - t0:.1f}s")
+                return place_segments(segs, levels), None
             except Exception as e:
                 log(f"meeting piece {a // SR}s ({who}) failed: {e!r}")
                 return [], str(e)[:200]
@@ -1877,53 +2076,73 @@ class MeetingSession:
         return chunk
 
     def _save_progress(self):
-        MeetingStore.write_text(self.id, "transcript.md", build_transcript(self.meta))
-        MeetingStore.save(self.meta)
+        with self.lock:
+            MeetingStore.write_text(self.id, "transcript.md", build_transcript(self.meta))
+            MeetingStore.save(self.meta)
         self._event("meeting_update", self.id)
 
+    def _fill(self, chunk):
+        """Transcribe one piece (runs in the background pool) and store the result in its place."""
+        try:
+            res = self._process(chunk["a"], chunk["b"])
+        except Exception as e:
+            log(f"meeting piece {chunk['a'] // SR}s crashed: {e!r}")
+            res = {"segments": [], "status": "failed", "error": str(e)[:200]}
+        with self.lock:
+            chunk.pop("error", None)
+            chunk.update(res)
+        self._save_progress()
+
     def _work(self):
+        pool = ThreadPoolExecutor(max_workers=MEET_WORKERS)
         try:
             step = MEET_CHUNK_S * SR
             pos = self.meta.get("processed", 0)
-            # 1. while recording: transcribe every finished 2-minute piece
+            futures = []
+
+            def submit(a, b):
+                chunk = {"a": a, "b": b, "segments": [], "status": "pending"}
+                with self.lock:
+                    self.meta["chunks"].append(chunk)
+                futures.append(pool.submit(self._fill, chunk))
+
+            # 1. while recording: every 30 s piece goes to the background pool; recording never waits for it
             while self.recording:
                 if self.recorder.elapsed() > MEET_MAX_HOURS * 3600:
                     self._event("meeting_stop_request",)
-                if self._total_samples() - pos >= step + 8 * SR:
+                if self._total_samples() - pos >= step + 5 * SR:
                     cut = self._cut_point(pos, pos + step)
-                    self.meta["chunks"].append(self._process(pos, cut))
+                    submit(pos, cut)
                     pos = self.meta["processed"] = cut
                     self.meta["duration"] = int(self.recorder.elapsed())
-                    self._save_progress()
                 else:
-                    self.stop_evt.wait(2)
-            # 2. after the meeting: the remaining pieces, all at once, then retry failed pieces
-            self.meta["status"], self.meta["stage"] = "processing", "transcribing"
+                    self.stop_evt.wait(1)
+            t_end = time.monotonic()
+            # 2. after the meeting: only the last few seconds are new; wait for pieces still in flight
+            with self.lock:                          # pieces may be saving right now
+                self.meta["status"], self.meta["stage"] = "processing", "transcribing"
             self._save_progress()
             total = self._total_samples()
-            pieces = []
-            while total - pos > SR:
-                end = total if total - pos <= step + 20 * SR else self._cut_point(pos, pos + step)
-                pieces.append((pos, end))
+            while total - pos > SR // 2:
+                end = total if total - pos <= step + 10 * SR else self._cut_point(pos, pos + step)
+                submit(pos, end)
                 pos = end
-            with ThreadPoolExecutor(max_workers=2) as ex:
-                for chunk in ex.map(lambda ab: self._process(*ab), pieces):
-                    self.meta["chunks"].append(chunk)
             self.meta["processed"] = pos
-            self._save_progress()
-            for attempt in range(3):                       # free-tier limits are per minute: wait, then retry
-                failed = [i for i, c in enumerate(self.meta["chunks"]) if c.get("status") == "failed"]
-                if not failed:
+            for fu in futures:
+                fu.result()
+            for attempt in range(2):                # a piece that failed: try again now, then once after a pause
+                with self.lock:
+                    todo = [c for c in self.meta["chunks"] if c.get("status") in ("failed", "pending")]
+                if not todo:
                     break
                 self.meta["stage"] = "retrying"
                 self._save_progress()
-                wait_for_gemini(90)
-                for i in failed:
-                    c = self.meta["chunks"][i]
-                    self.meta["chunks"][i] = self._process(c["a"], c["b"])
-                    self._save_progress()
+                if attempt:
+                    wait_for_gemini(30)
+                list(pool.map(self._fill, todo))
+            log(f"meeting {self.id}: transcript ready {time.monotonic() - t_end:.1f}s after stop")
             self.meta["duration"] = max(self.meta.get("duration", 0), int(total / SR))
-            # 3. summary
+            # 3. summary, streamed into the notes view while it is written
             self.meta["stage"] = "summarizing"
             self._save_progress()
             transcript = build_transcript(self.meta)
@@ -1933,25 +2152,32 @@ class MeetingSession:
                 MeetingStore.write_text(self.id, "notes.md", "")
             else:
                 try:
+                    shown = [0.0]
+
+                    def on_text(text):
+                        if time.monotonic() - shown[0] > 0.8:
+                            shown[0] = time.monotonic()
+                            MeetingStore.write_text(self.id, "notes.md", text)
+                            self._event("meeting_update", self.id)
                     notes = None
-                    for attempt in range(4):         # Google's "high demand" errors usually pass in seconds
+                    for attempt in range(3):         # Google's "high demand" errors usually pass in seconds
                         try:
-                            notes = summarize_meeting(transcript, self.cfg, self.meta.get("lang", "auto"))
+                            notes = summarize_meeting(transcript, self.cfg, self.meta.get("lang", "auto"), on_text)
                             break
                         except (QuotaError, EngineError):
-                            if attempt == 3:
+                            if attempt == 2:
                                 raise
-                            wait_for_gemini(45)
-                            time.sleep(5 * (attempt + 1))
+                            wait_for_gemini(20)
+                            time.sleep(3 * (attempt + 1))
                     MeetingStore.write_text(self.id, "notes.md", notes)
-                    first = notes.strip().splitlines()[0] if notes.strip() else ""
-                    if first.startswith("#"):
-                        self.meta["title"] = first.lstrip("#").strip()[:90] or self.meta["title"]
+                    self.meta["title"] = _first_heading(notes) or self.meta["title"]
                     failed = any(c.get("status") == "failed" for c in self.meta["chunks"])
                     self.meta["status"] = "partial" if failed else "done"
                 except Exception as e:
                     log(f"meeting summary failed: {e!r}")
                     self.meta["status"], self.meta["error"] = "summary_failed", str(e)[:200]
+            log(f"meeting {self.id}: notes ready {time.monotonic() - t_end:.1f}s after stop "
+                f"({self.meta.get('duration', 0) // 60} min meeting)")
             self.meta.pop("stage", None)
             # 4. tidy up the raw audio
             if self.meta["status"] in ("done", "empty"):
@@ -1966,6 +2192,8 @@ class MeetingSession:
             except Exception:
                 pass
             self._event("meeting_done", self.id)
+        finally:
+            pool.shutdown(wait=False)
 
     def _cleanup_audio(self, total):
         if self.cfg.get("keep_meeting_audio"):
@@ -1991,9 +2219,7 @@ def resummarize(mid, cfg):
     meta = MeetingStore.load(mid)
     notes = summarize_meeting(build_transcript(meta), cfg, meta.get("lang", "auto"))
     MeetingStore.write_text(mid, "notes.md", notes)
-    first = notes.strip().splitlines()[0] if notes.strip() else ""
-    if first.startswith("#"):
-        meta["title"] = first.lstrip("#").strip()[:90] or meta["title"]
+    meta["title"] = _first_heading(notes) or meta["title"]
     if meta.get("status") == "summary_failed":
         meta["status"] = "done"
     MeetingStore.save(meta)
@@ -2967,7 +3193,7 @@ class App:
         if self.n_tab == "notes":
             notes = MeetingStore.read_text(mid, "notes.md")
             if not notes:
-                notes = ("# নোট তৈরি হচ্ছে…\n\nমিটিং চলাকালীন প্রতি মিনিটে কথাগুলো লেখা হচ্ছে ('পুরো ট্রান্সক্রিপ্ট' দেখুন)। "
+                notes = ("# নোট তৈরি হচ্ছে…\n\nমিটিং চলাকালীন প্রতি ৩০ সেকেন্ডে কথাগুলো লেখা হচ্ছে ('পুরো ট্রান্সক্রিপ্ট' দেখুন)। "
                          "মিটিং শেষ করলে এখানে সারাংশ, মূল পয়েন্ট, সিদ্ধান্ত আর করণীয় আসবে।") if live else \
                         "# এখনো সারাংশ নেই\n\n'↻ নতুন সারাংশ' চাপলে ট্রান্সক্রিপ্ট থেকে নোট বানানো হবে।"
             lines = notes.strip().splitlines()
@@ -2979,7 +3205,7 @@ class App:
             colors = {}
             text = MeetingStore.read_text(mid, "transcript.md")
             if not text:
-                t.insert("end", "প্রথম মিনিটের পর থেকে এখানে কথা দেখা যাবে…" if live else "কোনো কথা লেখা হয়নি।", "muted")
+                t.insert("end", "প্রথম ৩০ সেকেন্ডের পর থেকে এখানে কথা দেখা যাবে…" if live else "কোনো কথা লেখা হয়নি।", "muted")
             for line in text.splitlines():
                 m = line.split("] ", 1)
                 if line.startswith("[") and len(m) == 2:
@@ -3104,12 +3330,12 @@ class App:
             bn.pack(fill="x", pady=(0, 10))
             self.n_rec_lbl = ui.label(bn, "", 14, "semibold", color="#fecaca")
             self.n_rec_lbl.pack(side="left", padx=16, pady=12)
-            ui.label(bn, "প্রতি মিনিটে লেখা হচ্ছে · শেষে সারাংশ", 12, color="#fca5a5").pack(side="left")
+            ui.label(bn, "প্রতি ৩০ সেকেন্ডে লেখা হচ্ছে · শেষ করলেই সারাংশ", 12, color="#fca5a5").pack(side="left")
             ui.button(bn, "■  নোট শেষ করো", self.stop_meeting, kind="rec", height=34).pack(side="right", padx=12)
         elif live:
             bn = ui.card(self.n_banner, fg_color=C["accent_soft"], border_color=ui.adj("#3b2f63"))
             bn.pack(fill="x", pady=(0, 10))
-            stage = {"transcribing": "শেষ অংশগুলো লেখা হচ্ছে…", "summarizing": "সারাংশ আর মূল পয়েন্ট তৈরি হচ্ছে…",
+            stage = {"transcribing": "শেষ অংশগুলো লেখা হচ্ছে…", "summarizing": "সারাংশ লেখা হচ্ছে, নিচে দেখা যাচ্ছে…",
                      "retrying": "কিছু অংশ আবার চেষ্টা করা হচ্ছে…"}.get(meta.get("stage"), "নোট তৈরি হচ্ছে…")
             ui.label(bn, "✦  " + stage, 14, "semibold", color=C["accent_text"]).pack(side="left", padx=16, pady=12)
             pb = ctk.CTkProgressBar(bn, mode="indeterminate", progress_color=C["accent"], fg_color=C["surface3"], width=220)
@@ -4058,6 +4284,8 @@ def selftest(ui_check=False):
             out.append(f"{k} {len(a) / SR:.1f}s peak={int(np.abs(a).max()) if len(a) else 0}")
         import shutil
         shutil.rmtree(folder, ignore_errors=True)
+        if rec.errors or not all(rec.written.values()):
+            raise RuntimeError(", ".join(out) + " | " + info)
         return ", ".join(out) + " | " + info
     check("meeting recorder (5 s)", capture)
     check("fonts", lambda: f"loaded={ui.load_fonts(resource)} family={ui.FAMILY}")
