@@ -3287,6 +3287,8 @@ class App:
         win.geometry(f"+{max(l, l + (r - l - ww) // 2)}+{max(t, t + (b - t - wh) // 2 - 10)}")
 
     def _schedule_prebuild(self, delay=1500):
+        if not plat.IS_WIN:      # macOS Tk loops forever laying out a hidden window; build on demand there
+            return
         try:
             if getattr(self, "_prebuild_job", None):
                 self.root.after_cancel(self._prebuild_job)

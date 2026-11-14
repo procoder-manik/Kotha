@@ -642,6 +642,7 @@ class SystemAudioCapture:
             cfg.setChannelCount_(1)
             cfg.setWidth_(2)
             cfg.setHeight_(2)
+            cfg.setMinimumFrameInterval_((1, 1, 1, 0))          # CMTime 1/1 s: almost no video work
         except Exception as e:
             _log(f"screencapturekit config: {e!r}")
         self.stream = SCK.SCStream.alloc().initWithFilter_configuration_delegate_(flt, cfg, None)
