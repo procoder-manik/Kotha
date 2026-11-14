@@ -15,7 +15,9 @@ You need a free Gemini API key. Step-by-step guide: [README](https://github.com/
 
 ### Fixed
 - **The app froze when the mouse was over the floating handle** (busy cursor, nothing worked, voice typing could not paste). The handle redrew itself in an endless loop on hover. It now redraws only when you move to another button. This affected Windows and Mac in 2.4.0.
-- **Settings and Meeting Notes open instantly**: they are prepared quietly in the background (they used to take 2 to 4 seconds and froze the app meanwhile).
+- **Settings and Meeting Notes open much faster**: pages are built only when you open them, and on Windows they are prepared quietly in the background so they open instantly (they used to take 2 to 4 seconds and froze the app meanwhile).
+- **Mac: Settings could freeze** on some Apple Silicon Macs because of how scrolling pages were drawn. Scrolling was rebuilt and tested many times on Apple Silicon and Intel.
+- **Mac (Intel): meeting audio from the other people was not captured.** Fixed and tested on Intel and Apple Silicon.
 - **History opens fast** even with hundreds of entries.
 - A self-test now moves the mouse over the handle on every build, on real Windows and Mac machines, so this cannot come back unnoticed.
 
