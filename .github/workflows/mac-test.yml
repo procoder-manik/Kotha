@@ -28,7 +28,7 @@ jobs:
           kill -9 $pid 2>/dev/null
           echo "---- stdout"; cat out_src.txt
           LOG="$HOME/Library/Application Support/Kotha/kotha.log"
-          { echo "SOURCE SELFTEST ${{ matrix.os }}"; cat out_src.txt; echo "---- log"; tail -30 "$LOG" 2>/dev/null; } > ann_src.txt
+          { echo "SOURCE SELFTEST ${{ matrix.os }}"; grep -v ObjCPointer out_src.txt; echo "---- log"; grep -v selftest "$LOG" 2>/dev/null | tail -15; } > ann_src.txt
           msg=$(tr -d '\r' < ann_src.txt | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}' | cut -c1-8000)
           echo "::notice title=source-selftest::$msg"
       - name: Build the app
@@ -42,6 +42,6 @@ jobs:
           kill -9 $pid 2>/dev/null
           echo "---- stdout"; cat out_app.txt
           LOG="$HOME/Library/Application Support/Kotha/kotha.log"
-          { echo "APP SELFTEST ${{ matrix.os }}"; cat out_app.txt; echo "---- log"; tail -30 "$LOG" 2>/dev/null; } > ann_app.txt
+          { echo "APP SELFTEST ${{ matrix.os }}"; grep -v ObjCPointer out_app.txt; echo "---- log"; grep -v selftest "$LOG" 2>/dev/null | tail -15; } > ann_app.txt
           msg=$(tr -d '\r' < ann_app.txt | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}' | cut -c1-8000)
           echo "::notice title=app-selftest::$msg"

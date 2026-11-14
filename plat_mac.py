@@ -21,6 +21,8 @@ try:
     import Quartz
 except Exception:                      # not on a Mac, or pyobjc missing
     Quartz = None
+import warnings
+warnings.filterwarnings("ignore", message=".*PyObjCPointer created.*")
 
 IS_WIN, IS_MAC = False, True
 OS_NAME = "macOS"
@@ -523,7 +525,12 @@ def _sample_buffer_to_pcm16(sbuf, target_rate=16000):
     import numpy as np
     import objc
     lib = _cm()
-    ptr = objc.pyobjc_id(sbuf)
+    try:
+        ptr = objc.pyobjc_id(sbuf)                      # bridged CMSampleBuffer object (Apple Silicon builds)
+    except TypeError:
+        ptr = getattr(sbuf, "pointer", None)            # raw objc.ObjCPointer (seen on Intel Macs)
+        if not ptr:
+            return b""
     block = lib.CMSampleBufferGetDataBuffer(ptr)
     if not block:
         return b""
@@ -569,6 +576,7 @@ def request_screen_capture():
 
 
 _out_cls = None
+_logged_errors = set()
 
 
 def _output_class():
@@ -593,7 +601,10 @@ def _output_class():
                     if pcm:
                         self.cb(pcm)
                 except Exception as e:
-                    _log(f"system audio buffer: {e!r}")
+                    msg = repr(e)
+                    if msg not in _logged_errors:              # log each kind of error once, not per buffer
+                        _logged_errors.add(msg)
+                        _log(f"system audio buffer: {msg}")
         _out_cls = KothaAudioOutput
     return _out_cls
 

@@ -139,7 +139,7 @@ A thin line sits on the left edge of your screen, out of the way. **Hover** and 
 | ☰ | Open all meeting notes. |
 | ⚙ | Settings. |
 
-The line itself changes colour: grey (idle), amber (meeting found), red (recording), violet (making notes), green (dictating). Turn the handle off in **Settings > মিটিং নোট**.
+The line itself changes colour: Kotha green (idle), amber (meeting found), red (recording), violet (making notes), bright green (dictating). Turn the handle off in **Settings > মিটিং নোট**.
 
 ## macOS guide
 

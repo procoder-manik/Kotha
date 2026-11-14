@@ -1,4 +1,4 @@
-## Kotha 2.4.0: meeting notes on Mac too, a new floating handle and a cleaner design
+## Kotha 2.4.1: stability fix (please update)
 
 Free, open-source voice typing and AI meeting notes for Bangla, English and the mix of both. Windows and macOS.
 
@@ -13,17 +13,15 @@ Free, open-source voice typing and AI meeting notes for Bangla, English and the 
 
 You need a free Gemini API key. Step-by-step guide: [README](https://github.com/procoder-manik/Kotha#get-your-free-gemini-api-key).
 
-### What's new
-- **AI meeting notes on Mac** (macOS 13+ for the other people's voices): same as Windows. Records your mic and the call audio, transcribes every minute, and at the end gives title, summary, key points, decisions and action items. Needs the **Screen Recording** permission, only to hear the sound your Mac plays. Kotha does not record your screen.
-- **New floating handle:** a thin line on the left edge of the screen. Hover and it opens into round buttons: hands-free dictation, meeting notes, all notes, settings. Drag it up or down.
-- **Cleaner, rounder design** on Windows and Mac, with Windows 11 glass, the Hind Siliguri font and a new **সাপোর্ট** page.
-- **Mac:** meeting detection (call app open + microphone in use), menu-bar app, permission buttons in Settings.
-- **Self-test:** every build is now opened and checked on real Windows and macOS machines before release.
-- Renamed files: `Kotha-Windows-*.exe` and `Kotha-Mac-*.dmg`.
+### Fixed
+- **The app froze when the mouse was over the floating handle** (busy cursor, nothing worked, voice typing could not paste). The handle redrew itself in an endless loop on hover. It now redraws only when you move to another button. This affected Windows and Mac in 2.4.0.
+- **Settings and Meeting Notes open instantly**: they are prepared quietly in the background (they used to take 2 to 4 seconds and froze the app meanwhile).
+- **History opens fast** even with hundreds of entries.
+- A self-test now moves the mouse over the handle on every build, on real Windows and Mac machines, so this cannot come back unnoticed.
 
-### Good to know
-- **Mac first launch:** the app is not notarized by Apple. Right-click Kotha > Open. Then allow Input Monitoring, Accessibility, Microphone and Screen Recording, and reopen Kotha. Details in the [Mac guide](https://github.com/procoder-manik/Kotha#macos-guide).
-- Tell everyone in the meeting before you record. Notes stay on your computer.
-- The Mac meeting-notes feature was verified on a real Apple Silicon Mac in automated testing (system audio captured), but it is new: please report problems in Issues.
+### Improved
+- Floating handle in the Kotha logo colours: green line, green microphone button, red record button.
+
+Everything from 2.4.0 is included: meeting notes on Windows and Mac, the floating handle, the new design and the সাপোর্ট page.
 
 Developed by [Manik Hossain](https://www.manikhossain.in/), part of [NextGen Agency](https://www.nextgenagency.co/).
