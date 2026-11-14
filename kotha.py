@@ -66,7 +66,7 @@ else:
 
 APP = "Kotha"
 APP_BN = "কথা"
-VERSION = "2.4.1"
+VERSION = "2.5.0"
 CFG_VERSION = 3
 DATA_DIR = os.path.join(plat.USER_DATA_BASE, APP)
 MODELS_DIR = os.path.join(DATA_DIR, "models")

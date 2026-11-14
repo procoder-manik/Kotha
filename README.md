@@ -104,8 +104,8 @@ Good to know: Smart mode removes "um/আ/আহ", fixes self-corrections and pun
 
 - Works with **Google Meet, Zoom, Microsoft Teams, Slack, Discord, WhatsApp, Webex** and other call apps.
 - Records **your microphone** (labelled **আমি**) and **everything the computer plays**, which is the other people (**Speaker 1, Speaker 2, …**).
-- Meetings of **any length**: audio is saved to disk and transcribed **every minute while the meeting runs**, so the notes are ready seconds after you stop.
-- At the end you get: **title, summary, key points by topic, decisions, action items** (task, owner, due date) and open questions, in Bangla, English, or the meeting's own language. The full transcript with times and speakers is kept next to it.
+- Meetings of **any length**: audio is saved to disk and transcribed **every 30 seconds in the background while the meeting runs**, so the full notes are ready a few seconds after you stop (tested: a 32-minute meeting had its full notes 6 seconds after stop) and appear on screen while they are written.
+- At the end you get: **title, summary, key points by topic, decisions, action items** (task, owner, due date) and open questions. Speak Bangla (or Bangla-English mix) and the notes are in Bangla; speak English and they are in English. You can also fix the language in Settings. The full transcript with times and speakers is kept next to it.
 - Copy the notes, save them as Markdown, re-run the summary, or delete the meeting. Everything is under the tray icon > **মিটিং নোটগুলো**.
 
 **How to use**
@@ -218,7 +218,7 @@ Logs: `%APPDATA%\Kotha\kotha.log` (Windows), `~/Library/Application Support/Koth
 ```
  microphone ──────┐                                   ┌── voice typing: text pasted at your cursor
                   ├─► Kotha (kotha.py) ── Gemini ───► ┤
- call audio ──────┘     │  (your own key)              └── meeting notes: transcript every minute,
+ call audio ──────┘     │  (your own key)              └── meeting notes: transcript every 30 s,
   (loopback)            │                                  summary + key points at the end
                         └─ plat_win.py / plat_mac.py: shortcuts, paste, call detection, tray
 ```
@@ -226,7 +226,7 @@ Logs: `%APPDATA%\Kotha\kotha.log` (Windows), `~/Library/Application Support/Koth
 - **`kotha.py`**: the app: recording, engines, meeting pipeline, windows.
 - **`plat_win.py`, `plat_mac.py`**: everything OS-specific: global shortcut hook, paste keystroke, text-box detection, call detection, system-audio capture (Windows: WASAPI loopback; Mac: ScreenCaptureKit), tray helpers.
 - **`ui_theme.py`**: the design system (dark theme, Windows 11 Mica glass, Hind Siliguri font, components).
-- Meeting audio is recorded as two tracks (you / others), cut at quiet moments into 1-minute pieces, transcribed in parallel with speaker labels, then summarised by a stronger model. If a model is rate-limited Kotha falls back to the next one and retries.
+- Meeting audio is recorded as two tracks (you / others), cut at quiet moments into 30-second pieces and transcribed in the background with speaker labels while the meeting runs (quiet microphones are boosted; on Windows every output device is recorded, so headsets and the "communications" device are covered). At the end the summary is streamed from Gemini Flash-Lite, which writes a full summary in a few seconds. If a model is rate-limited Kotha falls back to the next one and retries.
 - A self-test (`Kotha --selftest --ui`) opens every window and checks audio and detection; it runs on real Windows and macOS machines in CI.
 
 ## Build from source

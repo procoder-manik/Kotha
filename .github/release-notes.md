@@ -1,4 +1,4 @@
-## Kotha 2.4.1: stability fix (please update)
+## Kotha 2.5.0: meeting notes in seconds
 
 Free, open-source voice typing and AI meeting notes for Bangla, English and the mix of both. Windows and macOS.
 
@@ -13,17 +13,21 @@ Free, open-source voice typing and AI meeting notes for Bangla, English and the 
 
 You need a free Gemini API key. Step-by-step guide: [README](https://github.com/procoder-manik/Kotha#get-your-free-gemini-api-key).
 
-### Fixed
-- **The app froze when the mouse was over the floating handle** (busy cursor, nothing worked, voice typing could not paste). The handle redrew itself in an endless loop on hover. It now redraws only when you move to another button. This affected Windows and Mac in 2.4.0.
-- **Settings and Meeting Notes open much faster**: pages are built only when you open them, and on Windows they are prepared quietly in the background so they open instantly (they used to take 2 to 4 seconds and froze the app meanwhile).
-- **Mac: Settings could freeze** on some Apple Silicon Macs because of how scrolling pages were drawn. Scrolling was rebuilt and tested many times on Apple Silicon and Intel.
-- **Mac (Intel): meeting audio from the other people was not captured.** Fixed and tested on Intel and Apple Silicon.
-- **History opens fast** even with hundreds of entries.
-- A self-test now moves the mouse over the handle on every build, on real Windows and Mac machines, so this cannot come back unnoticed.
+### Meeting notes: much faster
+- **Notes a few seconds after the meeting ends.** Tested with a 32-minute Bangla-English meeting played in real time: the full notes (summary, key points, decisions, action items) were ready **6 seconds** after stop. Version 2.4.1 needed about 8 minutes even for a 5-minute meeting.
+- The meeting is transcribed **every 30 seconds in the background** while it runs, so almost nothing is left to do at the end.
+- The summary **appears on screen while it is being written**.
+- If Google's servers are busy, Kotha switches to another model without losing any part of the meeting.
 
-### Improved
-- Floating handle in the Kotha logo colours: green line, green microphone button, red record button.
+### Meeting notes: captures more
+- **Windows: the other people are recorded on every output device.** Before, only the default speaker was recorded. If the call played through a headset, a monitor's speaker or the "communications" device, the other side was missing.
+- **Quiet microphones are no longer treated as silence**: Kotha measures each microphone's own noise level and raises quiet speech before transcribing.
 
-Everything from 2.4.0 is included: meeting notes on Windows and Mac, the floating handle, the new design and the সাপোর্ট page.
+### Language
+- **Speak Bangla (or Bangla-English mix) and the notes are in Bangla. Speak English and they are in English.** Kotha checks the language that was actually spoken. You can still fix the language in Settings.
+
+Tip: add names and words that are often misheard (for example bKash, SSLCommerz, your product names) in Settings > ভাষা ও লেখা > বিশেষ শব্দ ও নাম, and the transcript will spell them right.
+
+Everything from 2.4.1 is included.
 
 Developed by [Manik Hossain](https://www.manikhossain.in/), part of [NextGen Agency](https://www.nextgenagency.co/).
