@@ -14,5 +14,4 @@ customtkinter
 numpy
 soundcard; sys_platform == "win32"
 pyobjc-framework-ScreenCaptureKit; sys_platform == "darwin"
-pyobjc-framework-CoreMedia; sys_platform == "darwin"
 pyobjc-framework-CoreText; sys_platform == "darwin"

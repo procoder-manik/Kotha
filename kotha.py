@@ -4061,6 +4061,13 @@ def selftest(ui_check=False):
     check("fonts", lambda: f"loaded={ui.load_fonts(resource)} family={ui.FAMILY}")
     if ui_check:
         def windows():
+            import faulthandler
+            faulthandler.dump_traceback_later(70, exit=False, file=sys.stdout)   # where are we, if something hangs?
+            t0 = time.time()
+
+            def step(msg):
+                print(f"      {time.time() - t0:5.1f}s  {msg}", flush=True)
+            step("creating app")
             app = App()
             app.cfg["gemini_api_key"] = "AIzaSelfTest"
             app.apply_meeting_settings()
@@ -4075,18 +4082,22 @@ def selftest(ui_check=False):
             for page in ("start", "lang", "keys", "general", "meeting", "advanced", "support", "about"):
                 if page == "meeting" and not MEETING_SUPPORTED:
                     continue
+                step(f"settings page {page}")
                 app.open_settings(page)
                 pump(0.25)
             out.append(f"settings {app.settings_win.winfo_width()}x{app.settings_win.winfo_height()}")
             app.settings_win.destroy()
+            step("history")
             app.open_history()
             pump()
             app.history_win.destroy()
+            step("notes")
             app.open_notes()
             pump(0.5)
             out.append(f"notes {app.notes_win.winfo_width()}x{app.notes_win.winfo_height()}")
             app.notes_win.destroy()
             fb = app.float_bar
+            step("float bar")
             if fb is not None:
                 for hov in (None, "mic", "rec"):
                     fb.expanded, fb.hover = True, hov
@@ -4094,6 +4105,7 @@ def selftest(ui_check=False):
                     fb.draw()
                     pump(0.1)
                 # hover regression test: moving over the buttons must not start an endless redraw loop
+                step("hover test")
                 t = time.time()
                 for i in range(len(fb.KEYS)):
                     cx, cy = fb._btn_center(i)
@@ -4105,6 +4117,7 @@ def selftest(ui_check=False):
                 fb.place()
                 fb.draw()
                 out.append("float bar drawn")
+            step("card / overlay / popup")
             app.on_meeting_detected("Zoom", "Zoom")
             pump(0.3)
             app.card.close()
@@ -4114,6 +4127,8 @@ def selftest(ui_check=False):
             app.open_popup("test")
             pump(0.2)
             app.popup_win.destroy()
+            faulthandler.cancel_dump_traceback_later()
+            step("done")
             return ", ".join(out)
         check("windows", windows)
     lines.append("RESULT: " + ("OK" if ok else "FAILED"))

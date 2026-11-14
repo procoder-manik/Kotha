@@ -642,8 +642,6 @@ class SystemAudioCapture:
             cfg.setChannelCount_(1)
             cfg.setWidth_(2)
             cfg.setHeight_(2)
-            import CoreMedia
-            cfg.setMinimumFrameInterval_(CoreMedia.CMTimeMake(1, 1))
         except Exception as e:
             _log(f"screencapturekit config: {e!r}")
         self.stream = SCK.SCStream.alloc().initWithFilter_configuration_delegate_(flt, cfg, None)

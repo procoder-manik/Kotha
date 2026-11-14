@@ -8,7 +8,7 @@ with open("kotha.py", encoding="utf-8") as f:
 hidden = [
     "plat_mac", "pystray._darwin",
     "objc", "Foundation", "AppKit", "Quartz", "CoreFoundation", "ApplicationServices",
-    "PyObjCTools", "ui_theme", "ScreenCaptureKit", "CoreMedia", "CoreText",
+    "PyObjCTools", "ui_theme", "ScreenCaptureKit", "CoreText",
 ]
 
 from PyInstaller.utils.hooks import collect_data_files
