@@ -526,11 +526,11 @@ def _sample_buffer_to_pcm16(sbuf, target_rate=16000):
     import objc
     lib = _cm()
     try:
-        ptr = objc.pyobjc_id(sbuf)                      # bridged CMSampleBuffer object (Apple Silicon builds)
-    except TypeError:
-        ptr = getattr(sbuf, "pointer", None)            # raw objc.ObjCPointer (seen on Intel Macs)
+        ptr = objc.pyobjc_id(sbuf)                      # bridged CMSampleBuffer object
+    except TypeError:                                   # raw objc.ObjCPointer (CoreMedia bridge not loaded)
+        ptr = getattr(sbuf, "pointerAsInteger", None) or getattr(sbuf, "pointer", None)
         if not ptr:
-            return b""
+            raise TypeError(f"cannot read sample buffer pointer from {type(sbuf).__name__}")
     block = lib.CMSampleBufferGetDataBuffer(ptr)
     if not block:
         return b""
@@ -617,6 +617,10 @@ class SystemAudioCapture:
 
     def start(self, timeout=12):
         import ScreenCaptureKit as SCK
+        try:
+            import CoreMedia  # noqa: F401  (lets pyobjc hand us real CMSampleBuffer objects where it loads)
+        except Exception:
+            pass
         cfg = SCK.SCStreamConfiguration.alloc().init()
         if not cfg.respondsToSelector_(b"setCapturesAudio:"):
             raise RuntimeError("system audio needs macOS 13 or newer")
