@@ -25,10 +25,10 @@ jobs:
           python kotha.py --selftest --ui > out_src.txt 2>&1 &
           pid=$!
           for i in $(seq 1 150); do kill -0 $pid 2>/dev/null || break; sleep 1; done
-          kill -9 $pid 2>/dev/null
+          if kill -0 $pid 2>/dev/null; then echo "TIMEOUT: still running after 150s" >> out_src.txt; kill -9 $pid; else wait $pid; echo "process exit code $?" >> out_src.txt; fi
           echo "---- stdout"; cat out_src.txt
           LOG="$HOME/Library/Application Support/Kotha/kotha.log"
-          { echo "SOURCE SELFTEST ${{ matrix.os }}"; grep -v ObjCPointer out_src.txt; echo "---- log"; grep -v selftest "$LOG" 2>/dev/null | tail -15; } > ann_src.txt
+          { echo "SOURCE SELFTEST ${{ matrix.os }}"; grep -v ObjCPointer out_src.txt; echo "---- log"; tail -12 "$LOG" 2>/dev/null; echo "exit/kill status: $?"; } > ann_src.txt
           msg=$(tr -d '\r' < ann_src.txt | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}' | cut -c1-8000)
           echo "::notice title=source-selftest::$msg"
       - name: Build the app
@@ -39,9 +39,9 @@ jobs:
           dist/Kotha.app/Contents/MacOS/Kotha --selftest --ui > out_app.txt 2>&1 &
           pid=$!
           for i in $(seq 1 150); do kill -0 $pid 2>/dev/null || break; sleep 1; done
-          kill -9 $pid 2>/dev/null
+          if kill -0 $pid 2>/dev/null; then echo "TIMEOUT: still running after 150s" >> out_app.txt; kill -9 $pid; else wait $pid; echo "process exit code $?" >> out_app.txt; fi
           echo "---- stdout"; cat out_app.txt
           LOG="$HOME/Library/Application Support/Kotha/kotha.log"
-          { echo "APP SELFTEST ${{ matrix.os }}"; grep -v ObjCPointer out_app.txt; echo "---- log"; grep -v selftest "$LOG" 2>/dev/null | tail -15; } > ann_app.txt
+          { echo "APP SELFTEST ${{ matrix.os }}"; grep -v ObjCPointer out_app.txt; echo "---- log"; tail -12 "$LOG" 2>/dev/null; echo "exit/kill status: $?"; } > ann_app.txt
           msg=$(tr -d '\r' < ann_app.txt | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}' | cut -c1-8000)
           echo "::notice title=app-selftest::$msg"

@@ -4004,11 +4004,13 @@ def selftest(ui_check=False):
 
     def check(name, fn):
         nonlocal ok
+        print(f"..    {name}", flush=True)
         try:
             lines.append(f"ok    {name}: {fn()}")
         except Exception as e:
             ok = False
             lines.append(f"FAIL  {name}: {e!r}")
+        print(lines[-1], flush=True)
 
     check("numpy", lambda: __import__("numpy").__version__)
     if plat.IS_WIN:
